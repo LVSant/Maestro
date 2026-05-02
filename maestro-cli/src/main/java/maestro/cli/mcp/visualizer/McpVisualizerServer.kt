@@ -75,7 +75,7 @@ internal class McpVisualizerServer private constructor(
                 ?: "<!doctype html><p>Visualizer resource missing — build the CLI first.</p>"
 
         fun start(port: Int? = null): McpVisualizerServer {
-            val resolvedPort = port ?: getFreePort()
+            val resolvedPort = port ?: getFreePort(host = "127.0.0.1")
             val mapper = jacksonObjectMapper()
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             val events = SseBroadcaster(mapper)
@@ -108,9 +108,9 @@ internal class McpVisualizerServer private constructor(
             }
 
             val server = embeddedServer(
+                port = resolvedPort,
                 factory = Netty,
                 configure = { shutdownTimeout = 0; shutdownGracePeriod = 0 },
-                port = resolvedPort,
                 host = "127.0.0.1",
             ) {
                 routing {

@@ -19,34 +19,38 @@ import maestro.cli.mcp.tools.CheatSheetTool
 import maestro.cli.mcp.tools.RunOnCloudTool
 import maestro.cli.mcp.tools.GetCloudRunStatusTool
 import maestro.cli.mcp.tools.ListCloudDevicesTool
+import maestro.cli.mcp.tools.withVisualizerHint
 import maestro.cli.util.WorkingDirectory
 import java.io.PrintStream
 
-internal val INSTRUCTIONS = """
-    Maestro MCP authors, edits and runs UI tests via declarative YAML flows on Android emulators, iOS simulators, Chromium browsers, or Maestro Cloud. Use when the user wants to write, run, or debug a mobile or web UI test, reproduce a bug, or self-validate a user-facing change you just built.
+private val BASE_INSTRUCTIONS = """
+    Authors, edits, and runs UI tests via declarative YAML flows on Android emulators, iOS simulators, Chromium browsers (`chromium`), or Maestro Cloud.
 
-    Every local tool (`take_screenshot`, `inspect_screen`, `run`) needs a `device_id` from `list_devices` first.
-
-    Docs: https://docs.maestro.dev/llms.txt. Call `cheat_sheet` before authoring unfamiliar commands, required args, nested properties, conditionals, or multi-screen flows.
+    Every local tool needs a `device_id` from `list_devices`. Docs: https://docs.maestro.dev/llms.txt. Call `cheat_sheet` before unfamiliar commands.
 
     ## Local workflow
 
-    `list_devices` -> `inspect_screen` -> `run`.
+    `list_devices` -> `inspect_screen` -> `run`. `list_devices` returns connected IDs (ask user to boot one if empty). `inspect_screen` fetches the view hierarchy; re-inspect after any UI change. `run` takes exactly one of `{yaml}` (inline, preferred), `{files}`, or `{dir, include_tags, exclude_tags}`, plus `device_id` and optional `env`. Syntax is validated as part of the call.
 
-    1. `list_devices`: pick a `device_id` (mobile simulator/emulator, or `chromium` for web). If empty, ask the user to boot one. Use only IDs returned.
-    2. `inspect_screen`: fetch the current screen's view hierarchy before targeting elements. Use `take_screenshot` when a visual helps. Re-inspect after any UI change.
-    3. `run`: pass exactly one of `{ yaml }` (inline, preferred for exploration), `{ files }`, or `{ dir, include_tags, exclude_tags }`. Always include `device_id`. Pass `env` for flow variables. `run` validates syntax.
-
-    Mobile flows declare `appId` and start with `launchApp`; web flows declare `url` and start with `openLink`. `include_tags`/`exclude_tags` are bare names without `@`. Prefer one full flow over many single-command calls.
+    Mobile flows declare `appId` + start with `launchApp`; web flows declare `url` + start with `openLink`. Tags are bare (no `@`). Prefer one full flow over single-command calls.
 
     ## Cloud workflow
 
-    `list_cloud_devices` -> `run_on_cloud` -> `get_cloud_run_status` (poll).
+    `list_cloud_devices` -> `run_on_cloud` -> `get_cloud_run_status` (poll every 60s until SUCCESS/ERROR/CANCELED/WARNING).
 
-    `list_cloud_devices` returns valid `{device_model, device_os}` pairs. Pass them verbatim; never lowercase, reformat, or infer. `run_on_cloud` submits a flow or folder, returns `upload_id`, `project_id`, and a dashboard URL (async). Poll `get_cloud_run_status` every 60s until `status` is terminal (SUCCESS, ERROR, CANCELED, WARNING). Tags only apply with a folder. No tool lists past runs; ask for the `upload_id` or URL for previous runs.
+    `list_cloud_devices` returns `{device_model, device_os}` pairs — pass verbatim. `run_on_cloud` returns `upload_id`, `project_id`, dashboard URL. Tags only apply with a folder. No tool lists past runs.
 
-    Auth: `maestro login` (or `MAESTRO_CLOUD_API_KEY` for non-interactive). Never echo the API key.
+    Auth: `maestro login` or `MAESTRO_CLOUD_API_KEY`. Never echo the API key.
 """.trimIndent()
+
+private fun buildInstructions(visualizerUrl: String?): String {
+    if (visualizerUrl == null) return BASE_INSTRUCTIONS
+    return BASE_INSTRUCTIONS + "\n\n" + """
+        ## Live visualizer
+
+        $visualizerUrl shows the device and command status live. Open in an embedded-browser/page-navigation tool if available; otherwise share as a clickable link.
+    """.trimIndent()
+}
 
 // Captures the real stdout so the MCP protocol channel stays pristine even after
 // `claimMcpStdout()` routes `System.out` to stderr. Defaults to `System.out` for
@@ -64,7 +68,7 @@ internal fun claimMcpStdout() {
     System.setOut(System.err)
 }
 
-fun runMaestroMcpServer() {
+fun runMaestroMcpServer(visualizerUrl: String? = null) {
     // LogConfig silences log4j; the stdout redirect in `claimMcpStdout` catches
     // everything else. Keep both; they cover different noise sources.
     LogConfig.configure(logFileName = null, printToConsole = false)
@@ -81,15 +85,15 @@ fun runMaestroMcpServer() {
                 tools = ServerCapabilities.Tools(listChanged = true)
             )
         ),
-        instructions = INSTRUCTIONS
+        instructions = buildInstructions(visualizerUrl)
     )
 
     server.addTools(listOf(
-        ListDevicesTool.create(),
-        TakeScreenshotTool.create(sessionManager),
-        RunTool.create(sessionManager),
-        InspectScreenTool.create(sessionManager),
-        CheatSheetTool.create(),
+        ListDevicesTool.create().withVisualizerHint(visualizerUrl),
+        TakeScreenshotTool.create(sessionManager).withVisualizerHint(visualizerUrl),
+        RunTool.create(sessionManager).withVisualizerHint(visualizerUrl),
+        InspectScreenTool.create(sessionManager).withVisualizerHint(visualizerUrl),
+        CheatSheetTool.create().withVisualizerHint(visualizerUrl),
         ListCloudDevicesTool.create(),
         RunOnCloudTool.create(),
         GetCloudRunStatusTool.create()

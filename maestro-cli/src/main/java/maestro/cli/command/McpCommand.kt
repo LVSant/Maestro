@@ -44,7 +44,7 @@ class McpCommand : Callable<Int> {
         }
 
         try {
-            runMaestroMcpServer()
+            runMaestroMcpServer(visualizerUrl = visualizer?.let { "http://localhost:${it.port}/" })
         } finally {
             visualizer?.close()
         }
