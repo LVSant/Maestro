@@ -17,10 +17,8 @@ internal class McpVisualizerDriver(
         info.widthGrid to info.heightGrid
     }
 
-    private val screen: Screen? by lazy { runCatching { Screen(screenDimensions.first, screenDimensions.second) }.getOrNull() }
-
     override fun tap(point: Point) = emit({ status ->
-        VisualizerEvent.Tap(status = status, point = point.toPoint2D(), screen = screen)
+        VisualizerEvent.Tap(status = status, point = point.normalize())
     }) {
         delegate.tap(point)
     }
@@ -28,10 +26,9 @@ internal class McpVisualizerDriver(
     override fun swipe(start: Point, end: Point, durationMs: Long) = emit({ status ->
         VisualizerEvent.Swipe(
             status = status,
-            start = start.toPoint2D(),
-            end = end.toPoint2D(),
+            start = start.normalize(),
+            end = end.normalize(),
             durationMs = durationMs,
-            screen = screen,
         )
     }) {
         delegate.swipe(start, end, durationMs)
@@ -91,5 +88,8 @@ internal class McpVisualizerDriver(
 
     private fun Double.asPercentOf(total: Int): Int = (this * total).toInt()
 
-    private fun Point.toPoint2D(): Point2D = Point2D(x, y)
+    private fun Point.normalize(): Point2D {
+        val (width, height) = screenDimensions
+        return Point2D(x.toDouble() / width, y.toDouble() / height)
+    }
 }

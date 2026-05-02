@@ -4,8 +4,8 @@ import "./styles.css";
 
 type CommandStatus = "started" | "completed" | "failed" | "warned" | "skipped";
 type DriverStatus = "started" | "completed" | "failed";
+/** Normalized [0, 1] coordinates within the device's screen. */
 type Point2D = { x: number; y: number };
-type Screen = { width: number; height: number };
 
 type VisualizerEvent =
   | { type: "maestro.connected"; platform: string; deviceId: string }
@@ -19,14 +19,13 @@ type VisualizerEvent =
       yaml: string | null;
       errorMessage?: string | null;
     }
-  | { type: "driver.tap"; status: DriverStatus; point: Point2D; screen: Screen | null }
+  | { type: "driver.tap"; status: DriverStatus; point: Point2D }
   | {
       type: "driver.swipe";
       status: DriverStatus;
       start: Point2D;
       end: Point2D;
       durationMs: number;
-      screen: Screen | null;
     }
   | { type: "driver.input_text"; status: DriverStatus; textLength: number }
   | { type: "visualizer.connected" };
@@ -76,13 +75,10 @@ const TAP_RADIUS_START = 15;
 const TAP_RADIUS_END = 30;
 const SWIPE_FINGER_RADIUS = 20;
 
-function normalizePoint(point: Point2D, screen: Screen | null): OverlayPoint | undefined {
-  if (!screen) {
-    return point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1 ? point : undefined;
-  }
+function clampPoint(point: Point2D): OverlayPoint {
   return {
-    x: Math.max(0, Math.min(1, point.x / screen.width)),
-    y: Math.max(0, Math.min(1, point.y / screen.height)),
+    x: Math.max(0, Math.min(1, point.x)),
+    y: Math.max(0, Math.min(1, point.y)),
   };
 }
 type TrackedMaestroCommand = {
@@ -211,29 +207,26 @@ function overlayFromEvent(event: VisualizerEvent): DeviceOverlay | undefined {
   const id = `${event.type}-${timestampMs}`;
 
   if (event.type === "driver.tap" && event.status === "started") {
-    const normalized = normalizePoint(event.point, event.screen);
-    return normalized && {
+    return {
       id,
       kind: "tap",
-      point: normalized,
+      point: clampPoint(event.point),
       timestampMs,
       durationMs: TAP_ANIMATION_DURATION_MS,
       expiresAt: timestampMs + TAP_ANIMATION_DURATION_MS,
-    } || undefined;
+    };
   }
 
   if (event.type === "driver.swipe" && event.status === "started") {
-    const start = normalizePoint(event.start, event.screen);
-    const end = normalizePoint(event.end, event.screen);
-    return start && end && {
+    return {
       id,
       kind: "swipe",
-      start,
-      end,
+      start: clampPoint(event.start),
+      end: clampPoint(event.end),
       timestampMs,
       durationMs: event.durationMs,
       expiresAt: timestampMs + event.durationMs,
-    } || undefined;
+    };
   }
 
   if (event.type === "driver.input_text" && event.status === "started") {

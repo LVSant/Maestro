@@ -34,7 +34,6 @@ internal sealed interface VisualizerEvent {
     data class Tap(
         val status: DriverStatus,
         val point: Point2D,
-        val screen: Screen?,
     ) : VisualizerEvent
 
     data class Swipe(
@@ -42,7 +41,6 @@ internal sealed interface VisualizerEvent {
         val start: Point2D,
         val end: Point2D,
         val durationMs: Long,
-        val screen: Screen?,
     ) : VisualizerEvent
 
     data class InputText(
@@ -66,8 +64,8 @@ internal enum class DriverStatus(@JsonValue val wire: String) {
     COMPLETED("completed"),
     FAILED("failed"),
 }
-internal data class Point2D(val x: Int, val y: Int)
-internal data class Screen(val width: Int, val height: Int)
+// Normalized [0, 1] coordinates within the device's screen.
+internal data class Point2D(val x: Double, val y: Double)
 
 internal object McpVisualizerEvents {
     private val publisher = AtomicReference<((VisualizerEvent) -> Unit)?>(null)
