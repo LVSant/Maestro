@@ -26,6 +26,30 @@ maestro mcp
 
 This launches the MCP server via the Maestro CLI, exposing Maestro tools over STDIO for LLM agents and other clients.
 
+The command also starts the Maestro MCP visualizer as a local HTTP server in the same process and prints its URL to stderr:
+
+```
+MCP Visualizer: http://localhost:<port>/mcp-visualizer
+```
+
+Use `maestro mcp --no-visualizer` to disable it, or `maestro mcp --visualizer-port 9999` to choose a fixed port.
+
+## Visualizer development
+
+The visualizer is authored as a small React app in `maestro-cli/mcp-visualizer` using Bun, Vite, and Tailwind CSS v4.
+
+For fast UI iteration without rebuilding the CLI or running the MCP server:
+
+```
+cd maestro-cli/mcp-visualizer
+bun install
+bun run dev
+```
+
+For the CLI distribution, Gradle runs `bun run build`, which compiles the React app and inlines the generated JavaScript and CSS into one HTML resource at `mcp-visualizer/index.html`.
+
+The visualizer accepts lightweight runtime events via `POST /api/events` and streams them to connected browsers with `GET /api/events/stream`. Keep this route payload small and generic until the MCP server and Maestro driver event boundaries are more settled.
+
 ## Developing
 
 ## Extending the MCP Server
@@ -61,4 +85,3 @@ The [official MCP Kotlin SDK](https://github.com/modelcontextprotocol/kotlin-sdk
 
 - **Shared Abstractions:** If more MCP-related code or other integrations are needed, consider extracting shared abstractions (e.g., session management, tool interfaces) into a `common` or `core` module. This would allow for a clean separation and potentially enable a standalone `maestro-mcp` module.
 - **Streamable HTTP:** This MCP server currently only uses STDIO for communication.
-

@@ -4,8 +4,12 @@ import io.modelcontextprotocol.kotlin.sdk.types.*
 import io.modelcontextprotocol.kotlin.sdk.server.RegisteredTool
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
-import maestro.cli.session.MaestroSessionManager
+import maestro.cli.mcp.visualizer.McpDeviceContext
+import maestro.cli.mcp.McpMaestroSessionManager
+import maestro.cli.mcp.visualizer.McpVisualizerEvents
+import maestro.cli.mcp.visualizer.VisualizerEvent
 import maestro.cli.util.WorkingDirectory
+import maestro.orchestra.MaestroCommand
 import maestro.orchestra.Orchestra
 import maestro.orchestra.util.Env.withDefaultEnvVars
 import maestro.orchestra.util.Env.withEnv
@@ -18,6 +22,7 @@ import maestro.orchestra.yaml.YamlCommandReader
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.UUID
 
 object RunTool {
 
@@ -49,7 +54,7 @@ object RunTool {
         Use `cheat_sheet` for Maestro flow syntax.
     """
 
-    fun create(sessionManager: MaestroSessionManager): RegisteredTool {
+    internal fun create(sessionManager: McpMaestroSessionManager): RegisteredTool {
         return RegisteredTool(
             Tool(
                 name = TOOL_NAME,
@@ -63,7 +68,7 @@ object RunTool {
 
     internal fun handle(
         request: CallToolRequest,
-        sessionManager: MaestroSessionManager,
+        sessionManager: McpMaestroSessionManager,
     ): CallToolResult {
         val args = when (val parsed = RunToolArgs.parse(request.arguments)) {
             is ParseResult.Failure -> return errorResult(parsed.message)
@@ -79,14 +84,11 @@ object RunTool {
         }
 
         return try {
-            val result = sessionManager.newSession(
-                host = null,
-                port = null,
-                driverHostPort = null,
+            val result = sessionManager.withSession(
                 deviceId = args.deviceId,
-                platform = null,
             ) { session ->
-                val orchestra = Orchestra(session.maestro)
+                val flowId = UUID.randomUUID().toString()
+                val orchestra = visualizedOrchestra(session.maestro, session.context, flowId)
                 when (executable) {
                     is Executable.Inline -> runInline(args.deviceId, orchestra, executable.yaml, args.env)
                     is Executable.Plan -> runPlan(args.deviceId, orchestra, executable.plan, args.env)
@@ -100,6 +102,53 @@ object RunTool {
         } catch (e: Exception) {
             errorResult("Failed to run flow: ${e.message}")
         }
+    }
+
+    private fun visualizedOrchestra(
+        maestro: maestro.Maestro,
+        context: McpDeviceContext,
+        flowId: String,
+    ): Orchestra {
+        fun publishCommand(status: String, index: Int, command: MaestroCommand, error: Throwable? = null) {
+            val description = command.description()
+            McpVisualizerEvents.publish(
+                VisualizerEvent(
+                    type = "maestro.command",
+                    source = "orchestra",
+                    title = description,
+                    status = status,
+                    detail = error?.message,
+                    payload = mapOf(
+                        "flowId" to flowId,
+                        "index" to index,
+                        "description" to description,
+                        "commandType" to command.asCommand()?.javaClass?.simpleName,
+                        "yaml" to command.sourceInfo?.let { it.source.substring(it.startOffset, it.endOffset) },
+                        "callId" to "$flowId:$index",
+                    ) + context.payload(),
+                )
+            )
+        }
+
+        return Orchestra(
+            maestro = maestro,
+            onCommandStart = { index, command ->
+                publishCommand("started", index, command)
+            },
+            onCommandComplete = { index, command ->
+                publishCommand("completed", index, command)
+            },
+            onCommandWarned = { index, command ->
+                publishCommand("warned", index, command)
+            },
+            onCommandSkipped = { index, command ->
+                publishCommand("skipped", index, command)
+            },
+            onCommandFailed = { index, command, error ->
+                publishCommand("failed", index, command, error)
+                throw error
+            },
+        )
     }
 
     private fun resolveExecutable(input: RunInput): Executable = when (input) {
