@@ -3,7 +3,7 @@ package maestro.cli.command
 import picocli.CommandLine
 import java.util.concurrent.Callable
 import maestro.cli.mcp.runMaestroMcpServer
-import maestro.cli.mcp.visualizer.startMcpVisualizerServer
+import maestro.cli.mcp.visualizer.McpVisualizerServer
 import java.io.File
 import maestro.cli.util.WorkingDirectory
 
@@ -40,9 +40,7 @@ class McpCommand : Callable<Int> {
         val visualizer = if (noVisualizer) {
             null
         } else {
-            startMcpVisualizerServer(visualizerPort).also {
-                System.err.println("MCP Visualizer: http://localhost:${it.port}/mcp-visualizer")
-            }
+            McpVisualizerServer.start(visualizerPort)
         }
 
         try {

@@ -24,12 +24,12 @@ import io.ktor.server.routing.routing
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.copyAndClose
 import io.ktor.utils.io.writeStringUtf8
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -39,29 +39,10 @@ import maestro.device.DeviceService
 import maestro.device.Platform
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.collections.get
 
-internal class McpVisualizerServerHandle(
-    val server: ApplicationEngine,
-    val port: Int,
-    private val closeStream: () -> Unit,
-) : AutoCloseable {
-    override fun close() {
-        closeStream()
-        server.stop(0, 0)
-    }
-}
-
-private data class DeviceStreamStartRequest(
-    val platform: String? = null,
-    val deviceId: String? = null,
-)
-
-private data class DeviceStreamState(
+internal data class DeviceStreamState(
     val status: String,
     val platform: String? = null,
     val deviceId: String? = null,
@@ -69,82 +50,153 @@ private data class DeviceStreamState(
     val message: String? = null,
 )
 
-private data class DeviceStreamTarget(
-    val platform: String,
-    val deviceId: String,
-)
+private data class DeviceStreamTarget(val platform: String, val deviceId: String)
 
-private const val SIMULATOR_OUTPUT_TAIL_CAPACITY = 4096
+internal class McpVisualizerServer private constructor(
+    val port: Int,
+    private val server: ApplicationEngine,
+    private val scope: CoroutineScope,
+    private val deviceStream: DeviceStream,
+    private val httpClient: HttpClient,
+    private val eventRegistration: AutoCloseable,
+) : AutoCloseable {
 
-internal fun startMcpVisualizerServer(port: Int? = null): McpVisualizerServerHandle {
-    val selectedPort = port ?: getFreePort()
-    val mapper = jacksonObjectMapper()
-    val visualizerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    val events = SseBroadcaster(name = "events", mapper = mapper, scope = visualizerScope)
-    val deviceStates = SseBroadcaster(name = "device-state", mapper = mapper, scope = visualizerScope)
-    val httpClient = HttpClient(CIO) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
-            socketTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
-            connectTimeoutMillis = 10_000
+    override fun close() {
+        eventRegistration.close()
+        scope.cancel()
+        deviceStream.close()
+        httpClient.close()
+        server.stop(0, 0)
+    }
+
+    companion object {
+        private fun readVisualizerHtml(): String =
+            McpVisualizerServer::class.java.getResource("/mcp-visualizer/index.html")?.readText()
+                ?: "<!doctype html><p>Visualizer resource missing — build the CLI first.</p>"
+
+        fun start(port: Int? = null): McpVisualizerServer {
+            val resolvedPort = port ?: getFreePort()
+            val mapper = jacksonObjectMapper()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val events = SseBroadcaster(mapper)
+            val deviceStates = SseBroadcaster(mapper)
+            val deviceStream = DeviceStream(onStateChange = { deviceStates.publish(it) })
+            val httpClient = HttpClient(CIO) {
+                install(HttpTimeout) {
+                    requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
+                    socketTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
+                    connectTimeoutMillis = 10_000
+                }
+            }
+
+            suspend fun ApplicationCall.respondJson(value: Any, status: HttpStatusCode = HttpStatusCode.OK) {
+                respondText(mapper.writeValueAsString(value), ContentType.Application.Json, status)
+            }
+
+            fun deviceStreamTargets(): List<DeviceStreamTarget> =
+                DeviceService.listConnectedDevices()
+                    .filter { it.platform != Platform.WEB }
+                    .map { DeviceStreamTarget(it.platform.name.lowercase(), it.instanceId) }
+
+            val eventRegistration = McpVisualizerEvents.register { event ->
+                scope.launch {
+                    events.publish(event)
+                    if (event is VisualizerEvent.MaestroConnected && event.platform != "web") {
+                        deviceStream.start(event.platform, event.deviceId)
+                    }
+                }
+            }
+
+            val server = embeddedServer(
+                factory = Netty,
+                configure = { shutdownTimeout = 0; shutdownGracePeriod = 0 },
+                port = resolvedPort,
+                host = "127.0.0.1",
+            ) {
+                routing {
+                    get("/") { call.respondText(readVisualizerHtml(), ContentType.Text.Html) }
+                    get("/api/events/stream") { events.stream(call, VisualizerEvent.VisualizerConnected) }
+                    get("/api/device/state") { deviceStates.stream(call, deviceStream.state) }
+                    get("/api/device/targets") { call.respondJson(mapOf("devices" to deviceStreamTargets())) }
+                    post("/api/device/start") {
+                        data class Request(val platform: String? = null, val deviceId: String? = null)
+                        val request = runCatching { mapper.readValue<Request>(call.receiveText()) }.getOrNull()
+                        val platform = request?.platform
+                        val deviceId = request?.deviceId
+                        if (platform.isNullOrBlank() || deviceId.isNullOrBlank()) {
+                            call.respondJson(mapOf("error" to "platform and deviceId are required"), HttpStatusCode.BadRequest)
+                            return@post
+                        }
+                        call.respondJson(deviceStream.start(platform, deviceId))
+                    }
+                    get("/api/device/stream") {
+                        val state = deviceStream.state
+                        val streamUrl = state.streamUrl
+                        if (state.status != "streaming" || streamUrl == null) {
+                            call.respondJson(state, HttpStatusCode.Conflict)
+                            return@get
+                        }
+                        httpClient.prepareGet(streamUrl).execute { response ->
+                            val contentType = response.headers["Content-Type"]?.let { ContentType.parse(it) }
+                                ?: ContentType.Application.OctetStream
+                            call.respondBytesWriter(contentType = contentType, status = HttpStatusCode.OK) {
+                                response.bodyAsChannel().copyAndClose(this)
+                            }
+                        }
+                    }
+                }
+            }.start(wait = false)
+
+            System.err.println("mcp_visualizer_ready http://127.0.0.1:$resolvedPort")
+
+            return McpVisualizerServer(
+                port = resolvedPort,
+                server = server,
+                scope = scope,
+                deviceStream = deviceStream,
+                httpClient = httpClient,
+                eventRegistration = eventRegistration,
+            )
         }
     }
+}
 
-    var deviceState = DeviceStreamState(status = "idle")
-    var deviceProcess: Process? = null
+private class DeviceStream(
+    private val onStateChange: suspend (DeviceStreamState) -> Unit,
+) : AutoCloseable {
+    private var process: Process? = null
 
-    suspend fun ApplicationCall.respondJson(value: Any, status: HttpStatusCode = HttpStatusCode.OK) {
-        respondText(mapper.writeValueAsString(value), ContentType.Application.Json, status)
-    }
+    @Volatile
+    var state: DeviceStreamState = DeviceStreamState(status = "idle")
+        private set
 
-    suspend fun setDeviceState(next: DeviceStreamState) {
-        deviceState = next
-        deviceStates.publish(next)
-    }
-
-    fun stopDeviceProcess() {
-        val process = deviceProcess ?: return
-        process.destroy()
-        if (!process.waitFor(2, TimeUnit.SECONDS)) {
-            process.destroyForcibly()
-        }
-        deviceProcess = null
-    }
-
-    suspend fun startDeviceStream(platform: String, deviceId: String): DeviceStreamState {
-        val current = deviceState
-        if (
-            current.platform == platform &&
-            current.deviceId == deviceId &&
-            (current.status == "starting" || current.status == "streaming")
-        ) {
+    suspend fun start(platform: String, deviceId: String): DeviceStreamState {
+        val current = state
+        if (current.platform == platform && current.deviceId == deviceId &&
+            (current.status == "starting" || current.status == "streaming")) {
             return current
         }
 
-        stopDeviceProcess()
-        setDeviceState(DeviceStreamState(status = "starting", platform = platform, deviceId = deviceId))
+        close()
+        setState(DeviceStreamState(status = "starting", platform = platform, deviceId = deviceId))
 
         runCatching {
             Dependencies.installSimulatorServer()
-            val process = ProcessBuilder(
+            val p = ProcessBuilder(
                 Dependencies.simulatorServerBinary().absolutePath,
-                platform,
-                "--id",
-                deviceId,
-            )
-                .redirectErrorStream(true)
-                .start()
-            deviceProcess = process
-            val streamUrl = awaitStreamReady(process)
-            setDeviceState(DeviceStreamState(
+                platform, "--id", deviceId,
+            ).redirectErrorStream(true).start()
+            process = p
+            val streamUrl = awaitStreamReady(p)
+            setState(DeviceStreamState(
                 status = "streaming",
                 platform = platform,
                 deviceId = deviceId,
                 streamUrl = streamUrl,
             ))
         }.onFailure { error ->
-            stopDeviceProcess()
-            setDeviceState(DeviceStreamState(
+            close()
+            setState(DeviceStreamState(
                 status = "error",
                 platform = platform,
                 deviceId = deviceId,
@@ -152,234 +204,76 @@ internal fun startMcpVisualizerServer(port: Int? = null): McpVisualizerServerHan
             ))
         }
 
-        return deviceState
+        return state
     }
 
-    fun deviceStreamTargets(): List<DeviceStreamTarget> {
-        return DeviceService.listConnectedDevices()
-            .filter { it.platform != Platform.WEB }
-            .map {
-                DeviceStreamTarget(
-                    platform = it.platform.name.lowercase(),
-                    deviceId = it.instanceId,
-                )
-            }
+    override fun close() {
+        val p = process ?: return
+        p.destroy()
+        if (!p.waitFor(2, TimeUnit.SECONDS)) p.destroyForcibly()
+        process = null
     }
 
-    val eventRegistration = McpVisualizerEvents.register { event ->
-        visualizerScope.launch {
-            events.publish(event)
-            if (event is VisualizerEvent.MaestroConnected && event.platform != "web") {
-                startDeviceStream(event.platform, event.deviceId)
+    private suspend fun setState(next: DeviceStreamState) {
+        state = next
+        onStateChange(next)
+    }
+
+    private fun awaitStreamReady(process: Process): String {
+        val reader = BufferedReader(InputStreamReader(process.inputStream))
+        val deadline = System.currentTimeMillis() + 30_000
+        while (System.currentTimeMillis() < deadline) {
+            val line = reader.readLine() ?: error("simulator-server exited before announcing stream_ready")
+            System.err.println("[simulator-server] $line")
+            if (line.startsWith("stream_ready ")) {
+                // Drain the rest in the background so the child's stdout pipe doesn't block.
+                Thread { runCatching { reader.forEachLine { System.err.println("[simulator-server] $it") } } }
+                    .apply { isDaemon = true }.start()
+                return line.removePrefix("stream_ready ").trim()
             }
         }
-    }
-
-    val server = embeddedServer(
-        factory = Netty,
-        configure = {
-            shutdownTimeout = 0
-            shutdownGracePeriod = 0
-        },
-        port = selectedPort,
-        host = "127.0.0.1",
-    ) {
-        routing {
-            get("/") {
-                call.respondText(readVisualizerHtml(), ContentType.Text.Html)
-            }
-            get("/mcp-visualizer") {
-                call.respondText(readVisualizerHtml(), ContentType.Text.Html)
-            }
-            get("/api/health") {
-                call.respondJson(mapOf("ok" to true))
-            }
-            post("/api/events") {
-                val parsed = runCatching { mapper.readValue<VisualizerEvent>(call.receiveText()) }
-                val input = parsed.getOrNull()
-                if (input == null) {
-                    call.respondJson(
-                        mapOf("error" to (parsed.exceptionOrNull()?.message ?: "invalid event")),
-                        HttpStatusCode.BadRequest,
-                    )
-                    return@post
-                }
-                McpVisualizerEvents.publish(input)
-                call.respondJson(mapOf("ok" to true))
-            }
-            get("/api/events/stream") {
-                events.stream(call, VisualizerEvent.VisualizerConnected)
-            }
-            get("/api/device") {
-                call.respondJson(deviceState)
-            }
-            get("/api/device/targets") {
-                call.respondJson(mapOf("devices" to deviceStreamTargets()))
-            }
-            get("/api/device/state") {
-                deviceStates.stream(call, deviceState)
-            }
-            post("/api/device/start") {
-                val request = runCatching { mapper.readValue<DeviceStreamStartRequest>(call.receiveText()) }
-                    .getOrDefault(DeviceStreamStartRequest())
-                val platform = request.platform
-                val deviceId = request.deviceId
-                if (platform.isNullOrBlank() || deviceId.isNullOrBlank()) {
-                    call.respondJson(mapOf("error" to "platform and deviceId are required"), HttpStatusCode.BadRequest)
-                    return@post
-                }
-
-                call.respondJson(startDeviceStream(platform, deviceId))
-            }
-            post("/api/device/stop") {
-                stopDeviceProcess()
-                setDeviceState(DeviceStreamState(status = "idle"))
-                call.respondJson(deviceState)
-            }
-            get("/api/device/stream") {
-                val streamUrl = deviceState.streamUrl
-                if (deviceState.status != "streaming" || streamUrl == null) {
-                    call.respondJson(deviceState, HttpStatusCode.Conflict)
-                    return@get
-                }
-
-                httpClient.prepareGet(streamUrl).execute { response ->
-                    val contentType = response.headers["Content-Type"]?.let { ContentType.parse(it) }
-                        ?: ContentType.Application.OctetStream
-                    call.respondBytesWriter(contentType = contentType, status = HttpStatusCode.OK) {
-                        response.bodyAsChannel().copyAndClose(this)
-                    }
-                }
-            }
-        }
-    }.start(wait = false)
-
-    println("mcp_visualizer_ready http://127.0.0.1:$selectedPort")
-
-    return McpVisualizerServerHandle(server, selectedPort) {
-        eventRegistration.close()
-        visualizerScope.cancel()
-        stopDeviceProcess()
-        httpClient.close()
+        error("simulator-server did not announce stream_ready within 30s")
     }
 }
 
-
-private fun readVisualizerHtml(): String {
-    return McpVisualizerServerHandle::class.java
-        .getResource("/mcp-visualizer/index.html")
-        ?.readText()
-        ?: """
-            <!doctype html>
-            <html>
-              <body>
-                <p>Maestro MCP visualizer resource was not found. Build the CLI resources first.</p>
-              </body>
-            </html>
-        """.trimIndent()
-}
-
-private fun awaitStreamReady(process: Process): String {
-    val reader = BufferedReader(InputStreamReader(process.inputStream))
-    val outputTail = StringBuilder()
-    val deadline = System.currentTimeMillis() + 30_000
-    while (System.currentTimeMillis() < deadline) {
-        val line = reader.readLine() ?: run {
-            process.waitFor(500, TimeUnit.MILLISECONDS)
-            error("simulator-server exited before announcing stream_ready${outputTail.suffix()}")
-        }
-        System.err.println("[simulator-server] $line")
-        if (line.startsWith("stream_ready ")) {
-            drainInBackground(reader, "mcp-visualizer-simulator-stdout") {
-                System.err.println("[simulator-server] $it")
-            }
-            return line.removePrefix("stream_ready ").trim()
-        }
-        outputTail.appendTail(line)
-    }
-    error("simulator-server did not announce stream_ready within 30s${outputTail.suffix()}")
-}
-
-private fun drainInBackground(reader: BufferedReader, name: String, onLine: (String) -> Unit) {
-    Thread({
-        runCatching { reader.forEachLine(onLine) }
-    }, name).apply { isDaemon = true }.start()
-}
-
-private fun StringBuilder.appendTail(line: String) {
-    append(line).append('\n')
-    if (length > SIMULATOR_OUTPUT_TAIL_CAPACITY) {
-        delete(0, length - SIMULATOR_OUTPUT_TAIL_CAPACITY)
-    }
-}
-
-private fun StringBuilder.suffix(): String {
-    val tail = toString().trim()
-    return if (tail.isEmpty()) "" else ". simulator-server output:\n$tail"
-}
-
-private class SseBroadcaster(
-    private val name: String,
-    private val mapper: ObjectMapper,
-    private val scope: CoroutineScope,
-) {
-    private data class SseClient(
-        val id: Int,
-        val channel: ByteWriteChannel,
-        val mutex: Mutex = Mutex(),
-    )
-
+private class SseBroadcaster(private val mapper: ObjectMapper) {
     private val clients = CopyOnWriteArrayList<SseClient>()
-    private val nextClientId = AtomicInteger(1)
 
     suspend fun publish(value: Any) {
         val message = "data: ${mapper.writeValueAsString(value)}\n\n"
-        val snapshot = clients.toList()
-        snapshot.forEach { client ->
-            val failed = runCatching {
+        clients.toList().forEach { client ->
+            try {
                 client.write(message)
-            }.onFailure { error ->
-                System.err.println("[mcp-visualizer][$name] client=${client.id} write failed: ${error.message ?: error}")
-            }.isFailure
-            if (failed) clients.remove(client)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                RuntimeException("Error writing SSE message", e).also { e.printStackTrace() }
+                clients.remove(client)
+            }
         }
     }
 
     suspend fun stream(call: ApplicationCall, initialValue: Any) {
         call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
-            val client = SseClient(nextClientId.getAndIncrement(), this)
+            val client = SseClient(this)
             clients.add(client)
-            System.err.println("[mcp-visualizer][$name] client=${client.id} connected clients=${clients.size}")
-            val heartbeat = scope.launch {
-                while (true) {
-                    delay(5_000)
-                    val failed = runCatching {
-                        client.write(": heartbeat ${Instant.now()}\n\n")
-                    }.onFailure { error ->
-                        System.err.println("[mcp-visualizer][$name] client=${client.id} heartbeat failed: ${error.message ?: error}")
-                    }.isFailure
-                    if (failed) {
-                        clients.remove(client)
-                        break
-                    }
-                }
-            }
             try {
                 client.write("data: ${mapper.writeValueAsString(initialValue)}\n\n")
                 awaitCancellation()
             } finally {
-                heartbeat.cancel()
                 clients.remove(client)
-                System.err.println("[mcp-visualizer][$name] client=${client.id} disconnected clients=${clients.size}")
             }
         }
     }
+}
 
-    private suspend fun SseClient.write(message: String) {
+private class SseClient(private val channel: ByteWriteChannel) {
+    private val mutex = Mutex()
+
+    suspend fun write(message: String) {
         mutex.withLock {
             channel.writeStringUtf8(message)
             channel.flush()
         }
     }
-
 }
