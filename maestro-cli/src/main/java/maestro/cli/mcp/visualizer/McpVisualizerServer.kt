@@ -40,7 +40,6 @@ import maestro.device.Platform
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.time.Instant
-import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -170,8 +169,8 @@ internal fun startMcpVisualizerServer(port: Int? = null): McpVisualizerServerHan
     val eventRegistration = McpVisualizerEvents.register { event ->
         visualizerScope.launch {
             events.publish(event)
-            event.deviceStreamTarget()?.let { target ->
-                startDeviceStream(target.platform, target.deviceId)
+            event.deviceStreamTarget()?.let { (platform, deviceId) ->
+                startDeviceStream(platform, deviceId)
             }
         }
     }
@@ -203,14 +202,7 @@ internal fun startMcpVisualizerServer(port: Int? = null): McpVisualizerServerHan
                 call.respondJson(McpVisualizerEvents.publish(input))
             }
             get("/api/events/stream") {
-                events.stream(call, VisualizerEvent(
-                    id = UUID.randomUUID().toString(),
-                    type = "visualizer.connected",
-                    source = "visualizer",
-                    title = "Browser connected",
-                    status = "info",
-                    timestamp = Instant.now().toString(),
-                ))
+                events.stream(call, VisualizerEvent(type = "visualizer.connected"))
             }
             get("/api/device") {
                 call.respondJson(deviceState)
@@ -266,6 +258,15 @@ internal fun startMcpVisualizerServer(port: Int? = null): McpVisualizerServerHan
     }
 }
 
+private fun VisualizerEvent.deviceStreamTarget(): DeviceStreamTarget? {
+    if (type != "maestro.connected") return null
+    val payload = payload as? Map<*, *> ?: return null
+    val platform = (payload["platform"] as? String)?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
+    val deviceId = (payload["deviceId"] as? String)?.takeIf { it.isNotBlank() } ?: return null
+    if (platform == "web") return null
+    return DeviceStreamTarget(platform = platform, deviceId = deviceId)
+}
+
 private fun readVisualizerHtml(): String {
     return McpVisualizerServerHandle::class.java
         .getResource("/mcp-visualizer/index.html")
@@ -278,21 +279,6 @@ private fun readVisualizerHtml(): String {
               </body>
             </html>
         """.trimIndent()
-}
-
-private fun VisualizerEvent.deviceStreamTarget(): DeviceStreamTarget? {
-    if (type != "maestro.connected") return null
-    val payload = payload as? Map<*, *> ?: return null
-    val platform = payload.stringValue("platform")?.lowercase() ?: return null
-    val deviceId = payload.stringValue("deviceId")
-        ?: payload.stringValue("device_id")
-        ?: return null
-    if (platform == "web") return null
-    return DeviceStreamTarget(platform = platform, deviceId = deviceId)
-}
-
-private fun Map<*, *>.stringValue(key: String): String? {
-    return (this[key] as? String)?.takeIf { it.isNotBlank() }
 }
 
 private fun awaitStreamReady(process: Process): String {

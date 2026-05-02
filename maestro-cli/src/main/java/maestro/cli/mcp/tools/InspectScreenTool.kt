@@ -53,7 +53,7 @@ object InspectScreenTool {
                 ) { session ->
                     val maestro = session.maestro
                     val viewHierarchy = runBlocking { maestro.viewHierarchy() }
-                    ViewHierarchyFormatters.extractCompactJsonOutput(viewHierarchy.root, session.context.platform)
+                    ViewHierarchyFormatters.extractCompactJsonOutput(viewHierarchy.root, session.platform)
                 }
 
                 CallToolResult(content = listOf(TextContent(result)))

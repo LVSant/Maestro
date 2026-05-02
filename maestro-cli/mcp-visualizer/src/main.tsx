@@ -3,13 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 type VisualizerEvent = {
-  id?: string;
   type?: string;
-  source?: string;
-  title?: string;
-  status?: string;
-  timestamp?: string;
-  detail?: string;
   payload?: unknown;
 };
 
@@ -110,31 +104,29 @@ type TrackedMaestroCommand = {
   index: number;
   /** Monotonic insert order so multiple flows stay chronological in the log. */
   sequence: number;
-  yaml?: string;
-  title?: string;
+  yaml: string;
   status: string;
-  detail?: string;
+  errorMessage?: string;
 };
 
 function commandPayload(event: VisualizerEvent) {
   const p = payloadRecord(event.payload);
   const flowId = typeof p.flowId === "string" ? p.flowId : "";
-  const callId = typeof p.callId === "string" ? p.callId : event.id || `cmd-${Date.now()}`;
+  const callId = typeof p.callId === "string" ? p.callId : `cmd-${Date.now()}`;
   const index = typeof p.index === "number" ? p.index : Number(p.index);
   const yaml = typeof p.yaml === "string" ? p.yaml : undefined;
-  return { flowId, callId, index: Number.isFinite(index) ? index : 0, yaml };
-}
-
-function isHiddenMaestroVisualizerCommand(event: VisualizerEvent) {
-  const t = payloadRecord(event.payload).commandType;
-  return t === "ApplyConfigurationCommand" || t === "DefineVariablesCommand";
+  const status = typeof p.status === "string" ? p.status : "";
+  return { flowId, callId, index: Number.isFinite(index) ? index : 0, yaml, status };
 }
 
 function upsertMaestroCommand(rows: TrackedMaestroCommand[], event: VisualizerEvent): TrackedMaestroCommand[] {
-  if (event.type !== "maestro.command" || !event.status) return rows;
-  if (isHiddenMaestroVisualizerCommand(event)) return rows;
+  if (event.type !== "maestro.command") return rows;
 
-  const { flowId, callId, index, yaml } = commandPayload(event);
+  const { flowId, callId, index, yaml, status } = commandPayload(event);
+  // Synthetic commands (applyConfiguration, defineVariables) have no source yaml; skip them.
+  if (!yaml || !status) return rows;
+
+  const errorMessage = stringValue(payloadRecord(event.payload).errorMessage);
   const i = rows.findIndex((r) => r.callId === callId);
   const maxSeq = rows.reduce((m, r) => Math.max(m, r.sequence), 0);
   const sequence = i === -1 ? maxSeq + 1 : rows[i].sequence;
@@ -145,23 +137,21 @@ function upsertMaestroCommand(rows: TrackedMaestroCommand[], event: VisualizerEv
     index,
     sequence,
     yaml,
-    title: event.title,
-    status: event.status,
-    detail: event.detail,
+    status,
+    errorMessage,
   };
 
   if (i === -1) {
     return [...rows, nextRow].sort((a, b) => a.sequence - b.sequence);
   }
 
-  const prev = rows[i];
-  const merged = { ...prev, ...nextRow };
-  merged.yaml = yaml ?? prev.yaml;
-  merged.sequence = prev.sequence;
-
   const copy = [...rows];
-  copy[i] = merged;
+  copy[i] = nextRow;
   return copy.sort((a, b) => a.sequence - b.sequence);
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function StatusIcon({ status }: { status: string }) {
@@ -233,13 +223,9 @@ function CommandsPanel({ rows }: { rows: TrackedMaestroCommand[] }) {
               <span className="sr-only">{row.status}</span>
               <StatusIcon status={row.status} />
               <div className="min-w-0 flex-1 leading-5">
-                {row.yaml ? (
-                  <pre className="m-0 whitespace-pre-wrap break-words leading-[inherit]">{row.yaml}</pre>
-                ) : (
-                  <span className="leading-[inherit]">{row.title || "command"}</span>
-                )}
-                {row.detail && row.status === "failed" ? (
-                  <p className="mt-0 text-xs leading-4 text-red-400/90">{row.detail}</p>
+                <pre className="m-0 whitespace-pre-wrap break-words leading-[inherit]">{row.yaml}</pre>
+                {row.errorMessage && row.status === "failed" ? (
+                  <p className="mt-0 text-xs leading-4 text-red-400/90">{row.errorMessage}</p>
                 ) : null}
               </div>
             </li>
@@ -251,10 +237,10 @@ function CommandsPanel({ rows }: { rows: TrackedMaestroCommand[] }) {
 }
 
 function overlayFromEvent(event: VisualizerEvent): DeviceOverlay | undefined {
-  if (event.status !== "started") return undefined;
-
   const payload = payloadRecord(event.payload);
-  const id = event.id || `${event.type || "event"}-${Date.now()}`;
+  if (payload.status !== "started") return undefined;
+
+  const id = `${event.type || "event"}-${Date.now()}`;
   const timestampMs = Date.now();
 
   if (event.type === "driver.tap") {

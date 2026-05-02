@@ -4,7 +4,6 @@ import io.modelcontextprotocol.kotlin.sdk.types.*
 import io.modelcontextprotocol.kotlin.sdk.server.RegisteredTool
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
-import maestro.cli.mcp.visualizer.McpDeviceContext
 import maestro.cli.mcp.McpMaestroSessionManager
 import maestro.cli.mcp.visualizer.McpVisualizerEvents
 import maestro.cli.mcp.visualizer.VisualizerEvent
@@ -88,7 +87,7 @@ object RunTool {
                 deviceId = args.deviceId,
             ) { session ->
                 val flowId = UUID.randomUUID().toString()
-                val orchestra = visualizedOrchestra(session.maestro, session.context, flowId)
+                val orchestra = visualizedOrchestra(session.maestro, flowId)
                 when (executable) {
                     is Executable.Inline -> runInline(args.deviceId, orchestra, executable.yaml, args.env)
                     is Executable.Plan -> runPlan(args.deviceId, orchestra, executable.plan, args.env)
@@ -106,28 +105,19 @@ object RunTool {
 
     private fun visualizedOrchestra(
         maestro: maestro.Maestro,
-        context: McpDeviceContext,
         flowId: String,
     ): Orchestra {
         fun publishCommand(status: String, index: Int, command: MaestroCommand, error: Throwable? = null) {
-            val description = command.description()
-            McpVisualizerEvents.publish(
-                VisualizerEvent(
-                    type = "maestro.command",
-                    source = "orchestra",
-                    title = description,
-                    status = status,
-                    detail = error?.message,
-                    payload = mapOf(
-                        "flowId" to flowId,
-                        "index" to index,
-                        "description" to description,
-                        "commandType" to command.asCommand()?.javaClass?.simpleName,
-                        "yaml" to command.sourceInfo?.let { it.source.substring(it.startOffset, it.endOffset) },
-                        "callId" to "$flowId:$index",
-                    ) + context.payload(),
-                )
-            )
+            val payload = buildMap<String, Any?> {
+                put("flowId", flowId)
+                put("index", index)
+                put("status", status)
+                put("commandType", command.asCommand()?.javaClass?.simpleName)
+                put("yaml", command.sourceInfo?.let { it.source.substring(it.startOffset, it.endOffset) })
+                put("callId", "$flowId:$index")
+                if (error != null) put("errorMessage", error.message)
+            }
+            McpVisualizerEvents.publish(VisualizerEvent(type = "maestro.command", payload = payload))
         }
 
         return Orchestra(

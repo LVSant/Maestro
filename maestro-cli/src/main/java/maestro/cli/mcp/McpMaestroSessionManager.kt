@@ -5,7 +5,6 @@ import device.SimctlIOSDevice
 import ios.xctest.XCTestIOSDevice
 import maestro.Maestro
 import maestro.cli.CliError
-import maestro.cli.mcp.visualizer.McpDeviceContext
 import maestro.cli.mcp.visualizer.McpVisualizerDriver
 import maestro.cli.mcp.visualizer.McpVisualizerEvents
 import maestro.cli.mcp.visualizer.VisualizerEvent
@@ -34,9 +33,18 @@ internal class McpMaestroSessionManager : AutoCloseable {
         block: (McpMaestroSession) -> T,
     ): T {
         val session = sessions.computeIfAbsent(deviceId) {
-            createSession(deviceId).also { publishConnected(it.context) }
+            createSession(deviceId).also { publishConnected(it) }
         }
         return block(session)
+    }
+
+    private fun publishConnected(session: McpMaestroSession) {
+        McpVisualizerEvents.publish(
+            VisualizerEvent(
+                type = "maestro.connected",
+                payload = mapOf("platform" to session.platform, "deviceId" to session.deviceId),
+            )
+        )
     }
 
     override fun close() {
@@ -66,36 +74,21 @@ internal class McpMaestroSessionManager : AutoCloseable {
     }
 
     private fun createAndroidSession(device: Device.Connected): McpMaestroSession {
-        val context = device.context()
         val dadb = Dadb.list().find { it.toString() == device.instanceId }
             ?: error("Unable to find device with id ${device.instanceId}")
-        val androidDriver = AndroidDriver(dadb, null, device.instanceId, true)
-        val driver = McpVisualizerDriver(androidDriver, context)
-        return McpMaestroSession(
-            maestro = Maestro.android(driver),
-            context = context,
-        )
+        val driver = McpVisualizerDriver(AndroidDriver(dadb, null, device.instanceId, true), "android")
+        return McpMaestroSession(Maestro.android(driver), platform = "android", deviceId = device.instanceId)
     }
 
     private fun createIosSession(device: Device.Connected): McpMaestroSession {
-        val context = device.context()
-        val iosDriver = createIOSDriver(device.instanceId, device.deviceType)
-        val driver = McpVisualizerDriver(iosDriver, context)
-        return McpMaestroSession(
-            maestro = Maestro.ios(driver, openDriver = true),
-            context = context,
-        )
+        val driver = McpVisualizerDriver(createIOSDriver(device.instanceId, device.deviceType), "ios")
+        return McpMaestroSession(Maestro.ios(driver, openDriver = true), platform = "ios", deviceId = device.instanceId)
     }
 
     private fun createWebSession(): McpMaestroSession {
-        val context = McpDeviceContext("web", WEB_DEVICE_ID, "browser")
-        val webDriver = CdpWebDriver(isStudio = false, isHeadless = false, screenSize = null)
-        val driver = McpVisualizerDriver(webDriver, context)
+        val driver = McpVisualizerDriver(CdpWebDriver(isStudio = false, isHeadless = false, screenSize = null), "web")
         driver.open()
-        return McpMaestroSession(
-            maestro = Maestro(driver),
-            context = context,
-        )
+        return McpMaestroSession(Maestro(driver), platform = "web", deviceId = WEB_DEVICE_ID)
     }
 
     private fun createIOSDriver(
@@ -151,30 +144,10 @@ internal class McpMaestroSessionManager : AutoCloseable {
         )
     }
 
-    private fun publishConnected(context: McpDeviceContext) {
-        McpVisualizerEvents.publish(
-            VisualizerEvent(
-                type = "maestro.connected",
-                source = "mcp",
-                title = "Connected to Maestro",
-                status = "info",
-                detail = listOfNotNull(context.platform, context.deviceId).joinToString(" "),
-                payload = context.payload(),
-            )
-        )
-    }
-
-    private fun Device.Connected.context(): McpDeviceContext {
-        return McpDeviceContext(
-            platform = platform.name.lowercase(),
-            deviceId = instanceId,
-            deviceType = deviceType.name.lowercase(),
-        )
-    }
-
     data class McpMaestroSession(
         val maestro: Maestro,
-        val context: McpDeviceContext,
+        val platform: String,
+        val deviceId: String,
     ) {
         fun close() {
             maestro.close()
