@@ -2,10 +2,34 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
-type VisualizerEvent = {
-  type?: string;
-  payload?: unknown;
-};
+type CommandStatus = "started" | "completed" | "failed" | "warned" | "skipped";
+type DriverStatus = "started" | "completed" | "failed";
+type Point2D = { x: number; y: number };
+type Screen = { width: number; height: number };
+
+type VisualizerEvent =
+  | { type: "maestro.connected"; platform: string; deviceId: string }
+  | {
+      type: "maestro.command";
+      status: CommandStatus;
+      flowId: string;
+      index: number;
+      callId: string;
+      commandType: string | null;
+      yaml: string | null;
+      errorMessage?: string | null;
+    }
+  | { type: "driver.tap"; status: DriverStatus; point: Point2D; screen: Screen | null }
+  | {
+      type: "driver.swipe";
+      status: DriverStatus;
+      start: Point2D;
+      end: Point2D;
+      durationMs: number;
+      screen: Screen | null;
+    }
+  | { type: "driver.input_text"; status: DriverStatus; textLength: number }
+  | { type: "visualizer.connected" };
 
 type DeviceState = {
   status: "idle" | "starting" | "streaming" | "error";
@@ -19,8 +43,6 @@ type DeviceTarget = {
   platform: string;
   deviceId: string;
 };
-
-type EventPayload = Record<string, unknown>;
 
 type OverlayPoint = {
   x: number;
@@ -54,45 +76,10 @@ const TAP_RADIUS_START = 15;
 const TAP_RADIUS_END = 30;
 const SWIPE_FINGER_RADIUS = 20;
 
-function payloadRecord(payload: unknown): EventPayload {
-  return payload && typeof payload === "object" ? payload as EventPayload : {};
-}
-
-function numberValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function pointValue(value: unknown): OverlayPoint | undefined {
-  if (value && typeof value === "object") {
-    const point = value as Record<string, unknown>;
-    const x = numberValue(point.x);
-    const y = numberValue(point.y);
-    if (x != null && y != null) return { x, y };
-  }
-
-  if (typeof value === "string") {
-    const match = value.match(/x=(-?\d+),\s*y=(-?\d+)/);
-    if (match) return { x: Number(match[1]), y: Number(match[2]) };
-  }
-
-  return undefined;
-}
-
-function screenSize(payload: EventPayload) {
-  const screen = payload.screen;
-  if (!screen || typeof screen !== "object") return undefined;
-
-  const width = numberValue((screen as Record<string, unknown>).width);
-  const height = numberValue((screen as Record<string, unknown>).height);
-  return width && height ? { width, height } : undefined;
-}
-
-function normalizePoint(point: OverlayPoint, payload: EventPayload): OverlayPoint | undefined {
-  const screen = screenSize(payload);
+function normalizePoint(point: Point2D, screen: Screen | null): OverlayPoint | undefined {
   if (!screen) {
     return point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1 ? point : undefined;
   }
-
   return {
     x: Math.max(0, Math.min(1, point.x / screen.width)),
     y: Math.max(0, Math.min(1, point.y / screen.height)),
@@ -105,40 +92,27 @@ type TrackedMaestroCommand = {
   /** Monotonic insert order so multiple flows stay chronological in the log. */
   sequence: number;
   yaml: string;
-  status: string;
+  status: CommandStatus;
   errorMessage?: string;
 };
 
-function commandPayload(event: VisualizerEvent) {
-  const p = payloadRecord(event.payload);
-  const flowId = typeof p.flowId === "string" ? p.flowId : "";
-  const callId = typeof p.callId === "string" ? p.callId : `cmd-${Date.now()}`;
-  const index = typeof p.index === "number" ? p.index : Number(p.index);
-  const yaml = typeof p.yaml === "string" ? p.yaml : undefined;
-  const status = typeof p.status === "string" ? p.status : "";
-  return { flowId, callId, index: Number.isFinite(index) ? index : 0, yaml, status };
-}
-
 function upsertMaestroCommand(rows: TrackedMaestroCommand[], event: VisualizerEvent): TrackedMaestroCommand[] {
   if (event.type !== "maestro.command") return rows;
-
-  const { flowId, callId, index, yaml, status } = commandPayload(event);
   // Synthetic commands (applyConfiguration, defineVariables) have no source yaml; skip them.
-  if (!yaml || !status) return rows;
+  if (!event.yaml) return rows;
 
-  const errorMessage = stringValue(payloadRecord(event.payload).errorMessage);
-  const i = rows.findIndex((r) => r.callId === callId);
+  const i = rows.findIndex((r) => r.callId === event.callId);
   const maxSeq = rows.reduce((m, r) => Math.max(m, r.sequence), 0);
   const sequence = i === -1 ? maxSeq + 1 : rows[i].sequence;
 
   const nextRow: TrackedMaestroCommand = {
-    callId,
-    flowId,
-    index,
+    callId: event.callId,
+    flowId: event.flowId,
+    index: event.index,
     sequence,
-    yaml,
-    status,
-    errorMessage,
+    yaml: event.yaml,
+    status: event.status,
+    errorMessage: event.errorMessage ?? undefined,
   };
 
   if (i === -1) {
@@ -148,10 +122,6 @@ function upsertMaestroCommand(rows: TrackedMaestroCommand[], event: VisualizerEv
   const copy = [...rows];
   copy[i] = nextRow;
   return copy.sort((a, b) => a.sequence - b.sequence);
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function StatusIcon({ status }: { status: string }) {
@@ -237,52 +207,40 @@ function CommandsPanel({ rows }: { rows: TrackedMaestroCommand[] }) {
 }
 
 function overlayFromEvent(event: VisualizerEvent): DeviceOverlay | undefined {
-  const payload = payloadRecord(event.payload);
-  if (payload.status !== "started") return undefined;
-
-  const id = `${event.type || "event"}-${Date.now()}`;
   const timestampMs = Date.now();
+  const id = `${event.type}-${timestampMs}`;
 
-  if (event.type === "driver.tap") {
-    const point = pointValue(payload.point);
-    const normalized = point ? normalizePoint(point, payload) : undefined;
-    return normalized
-      ? {
-        id,
-        kind: "tap",
-        point: normalized,
-        timestampMs,
-        durationMs: TAP_ANIMATION_DURATION_MS,
-        expiresAt: timestampMs + TAP_ANIMATION_DURATION_MS,
-      }
-      : undefined;
+  if (event.type === "driver.tap" && event.status === "started") {
+    const normalized = normalizePoint(event.point, event.screen);
+    return normalized && {
+      id,
+      kind: "tap",
+      point: normalized,
+      timestampMs,
+      durationMs: TAP_ANIMATION_DURATION_MS,
+      expiresAt: timestampMs + TAP_ANIMATION_DURATION_MS,
+    } || undefined;
   }
 
-  if (event.type === "driver.swipe") {
-    const start = pointValue(payload.start);
-    const end = pointValue(payload.end);
-    const normalizedStart = start ? normalizePoint(start, payload) : undefined;
-    const normalizedEnd = end ? normalizePoint(end, payload) : undefined;
-    const durationMs = numberValue(payload.durationMs) ?? 500;
-    return normalizedStart && normalizedEnd
-      ? {
-        id,
-        kind: "swipe",
-        start: normalizedStart,
-        end: normalizedEnd,
-        timestampMs,
-        durationMs,
-        expiresAt: timestampMs + durationMs,
-      }
-      : undefined;
+  if (event.type === "driver.swipe" && event.status === "started") {
+    const start = normalizePoint(event.start, event.screen);
+    const end = normalizePoint(event.end, event.screen);
+    return start && end && {
+      id,
+      kind: "swipe",
+      start,
+      end,
+      timestampMs,
+      durationMs: event.durationMs,
+      expiresAt: timestampMs + event.durationMs,
+    } || undefined;
   }
 
-  if (event.type === "driver.input_text") {
-    const textLength = numberValue(payload.textLength);
+  if (event.type === "driver.input_text" && event.status === "started") {
     return {
       id,
       kind: "input_text",
-      text: textLength == null ? "input text" : `input text · ${textLength} chars`,
+      text: `input text · ${event.textLength} chars`,
       timestampMs,
       durationMs: 1_200,
       expiresAt: timestampMs + 1_200,

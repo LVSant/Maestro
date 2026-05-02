@@ -40,10 +40,7 @@ internal class McpMaestroSessionManager : AutoCloseable {
 
     private fun publishConnected(session: McpMaestroSession) {
         McpVisualizerEvents.publish(
-            VisualizerEvent(
-                type = "maestro.connected",
-                payload = mapOf("platform" to session.platform, "deviceId" to session.deviceId),
-            )
+            VisualizerEvent.MaestroConnected(platform = session.platform, deviceId = session.deviceId)
         )
     }
 

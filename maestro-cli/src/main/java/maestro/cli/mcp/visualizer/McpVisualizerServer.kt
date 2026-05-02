@@ -169,8 +169,8 @@ internal fun startMcpVisualizerServer(port: Int? = null): McpVisualizerServerHan
     val eventRegistration = McpVisualizerEvents.register { event ->
         visualizerScope.launch {
             events.publish(event)
-            event.deviceStreamTarget()?.let { (platform, deviceId) ->
-                startDeviceStream(platform, deviceId)
+            if (event is VisualizerEvent.MaestroConnected && event.platform != "web") {
+                startDeviceStream(event.platform, event.deviceId)
             }
         }
     }
@@ -195,14 +195,20 @@ internal fun startMcpVisualizerServer(port: Int? = null): McpVisualizerServerHan
                 call.respondJson(mapOf("ok" to true))
             }
             post("/api/events") {
-                // Keep event ingestion narrow for now. Kotlin callers can use this
-                // same local route until we know where driver-level events should hook in.
-                val input = runCatching { mapper.readValue<VisualizerEvent>(call.receiveText()) }
-                    .getOrDefault(VisualizerEvent())
-                call.respondJson(McpVisualizerEvents.publish(input))
+                val parsed = runCatching { mapper.readValue<VisualizerEvent>(call.receiveText()) }
+                val input = parsed.getOrNull()
+                if (input == null) {
+                    call.respondJson(
+                        mapOf("error" to (parsed.exceptionOrNull()?.message ?: "invalid event")),
+                        HttpStatusCode.BadRequest,
+                    )
+                    return@post
+                }
+                McpVisualizerEvents.publish(input)
+                call.respondJson(mapOf("ok" to true))
             }
             get("/api/events/stream") {
-                events.stream(call, VisualizerEvent(type = "visualizer.connected"))
+                events.stream(call, VisualizerEvent.VisualizerConnected)
             }
             get("/api/device") {
                 call.respondJson(deviceState)
@@ -258,14 +264,6 @@ internal fun startMcpVisualizerServer(port: Int? = null): McpVisualizerServerHan
     }
 }
 
-private fun VisualizerEvent.deviceStreamTarget(): DeviceStreamTarget? {
-    if (type != "maestro.connected") return null
-    val payload = payload as? Map<*, *> ?: return null
-    val platform = (payload["platform"] as? String)?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
-    val deviceId = (payload["deviceId"] as? String)?.takeIf { it.isNotBlank() } ?: return null
-    if (platform == "web") return null
-    return DeviceStreamTarget(platform = platform, deviceId = deviceId)
-}
 
 private fun readVisualizerHtml(): String {
     return McpVisualizerServerHandle::class.java

@@ -17,27 +17,25 @@ internal class McpVisualizerDriver(
         info.widthGrid to info.heightGrid
     }
 
-    private val screenPayload: Map<String, Int> by lazy {
-        mapOf("width" to screenDimensions.first, "height" to screenDimensions.second)
+    private val screen: Screen? by lazy { runCatching { Screen(screenDimensions.first, screenDimensions.second) }.getOrNull() }
+
+    override fun tap(point: Point) = emit({ status ->
+        VisualizerEvent.Tap(status = status, point = point.toPoint2D(), screen = screen)
+    }) {
+        delegate.tap(point)
     }
 
-    override fun tap(point: Point) =
-        emit("driver.tap", mapOf("point" to point.payload(), "screen" to screenPayload)) {
-            delegate.tap(point)
-        }
-
-    override fun swipe(start: Point, end: Point, durationMs: Long) =
-        emit(
-            "driver.swipe",
-            mapOf(
-                "start" to start.payload(),
-                "end" to end.payload(),
-                "durationMs" to durationMs,
-                "screen" to screenPayload,
-            ),
-        ) {
-            delegate.swipe(start, end, durationMs)
-        }
+    override fun swipe(start: Point, end: Point, durationMs: Long) = emit({ status ->
+        VisualizerEvent.Swipe(
+            status = status,
+            start = start.toPoint2D(),
+            end = end.toPoint2D(),
+            durationMs = durationMs,
+            screen = screen,
+        )
+    }) {
+        delegate.swipe(start, end, durationMs)
+    }
 
     override fun swipe(swipeDirection: SwipeDirection, durationMs: Long) {
         val (start, end) = swipePoints(swipeDirection)
@@ -48,27 +46,22 @@ internal class McpVisualizerDriver(
         swipe(elementPoint, swipeEndPoint(elementPoint, direction), durationMs)
     }
 
-    override fun inputText(text: String) =
-        emit("driver.input_text", mapOf("textLength" to text.length)) {
-            delegate.inputText(text)
-        }
-
-    private fun <T> emit(type: String, payload: Map<String, Any?>, call: () -> T): T {
-        publish(type, "started", payload)
-        return try {
-            val result = call()
-            publish(type, "completed", payload)
-            result
-        } catch (error: Throwable) {
-            publish(type, "failed", payload + ("message" to (error.message ?: error.toString())))
-            throw error
-        }
+    override fun inputText(text: String) = emit({ status ->
+        VisualizerEvent.InputText(status = status, textLength = text.length)
+    }) {
+        delegate.inputText(text)
     }
 
-    private fun publish(type: String, status: String, payload: Map<String, Any?>) {
-        McpVisualizerEvents.publish(
-            VisualizerEvent(type = type, payload = payload + ("status" to status))
-        )
+    private fun <T> emit(buildEvent: (DriverStatus) -> VisualizerEvent, call: () -> T): T {
+        McpVisualizerEvents.publish(buildEvent(DriverStatus.STARTED))
+        return try {
+            val result = call()
+            McpVisualizerEvents.publish(buildEvent(DriverStatus.COMPLETED))
+            result
+        } catch (error: Throwable) {
+            McpVisualizerEvents.publish(buildEvent(DriverStatus.FAILED))
+            throw error
+        }
     }
 
     private fun swipePoints(direction: SwipeDirection): Pair<Point, Point> {
@@ -98,5 +91,5 @@ internal class McpVisualizerDriver(
 
     private fun Double.asPercentOf(total: Int): Int = (this * total).toInt()
 
-    private fun Point.payload(): Map<String, Int> = mapOf("x" to x, "y" to y)
+    private fun Point.toPoint2D(): Point2D = Point2D(x, y)
 }

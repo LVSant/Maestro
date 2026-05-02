@@ -1,11 +1,73 @@
 package maestro.cli.mcp.visualizer
 
+import com.fasterxml.jackson.annotation.JsonSubTypes
+import com.fasterxml.jackson.annotation.JsonTypeInfo
+import com.fasterxml.jackson.annotation.JsonValue
 import java.util.concurrent.atomic.AtomicReference
 
-internal data class VisualizerEvent(
-    val type: String? = null,
-    val payload: Any? = null,
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
+@JsonSubTypes(
+    JsonSubTypes.Type(value = VisualizerEvent.MaestroConnected::class, name = "maestro.connected"),
+    JsonSubTypes.Type(value = VisualizerEvent.Command::class, name = "maestro.command"),
+    JsonSubTypes.Type(value = VisualizerEvent.Tap::class, name = "driver.tap"),
+    JsonSubTypes.Type(value = VisualizerEvent.Swipe::class, name = "driver.swipe"),
+    JsonSubTypes.Type(value = VisualizerEvent.InputText::class, name = "driver.input_text"),
+    JsonSubTypes.Type(value = VisualizerEvent.VisualizerConnected::class, name = "visualizer.connected"),
 )
+internal sealed interface VisualizerEvent {
+
+    data class MaestroConnected(
+        val platform: String,
+        val deviceId: String,
+    ) : VisualizerEvent
+
+    data class Command(
+        val status: CommandStatus,
+        val flowId: String,
+        val index: Int,
+        val callId: String,
+        val commandType: String?,
+        val yaml: String?,
+        val errorMessage: String? = null,
+    ) : VisualizerEvent
+
+    data class Tap(
+        val status: DriverStatus,
+        val point: Point2D,
+        val screen: Screen?,
+    ) : VisualizerEvent
+
+    data class Swipe(
+        val status: DriverStatus,
+        val start: Point2D,
+        val end: Point2D,
+        val durationMs: Long,
+        val screen: Screen?,
+    ) : VisualizerEvent
+
+    data class InputText(
+        val status: DriverStatus,
+        val textLength: Int,
+    ) : VisualizerEvent
+
+    data object VisualizerConnected : VisualizerEvent
+}
+
+internal enum class CommandStatus(@JsonValue val wire: String) {
+    STARTED("started"),
+    COMPLETED("completed"),
+    FAILED("failed"),
+    WARNED("warned"),
+    SKIPPED("skipped"),
+}
+
+internal enum class DriverStatus(@JsonValue val wire: String) {
+    STARTED("started"),
+    COMPLETED("completed"),
+    FAILED("failed"),
+}
+internal data class Point2D(val x: Int, val y: Int)
+internal data class Screen(val width: Int, val height: Int)
 
 internal object McpVisualizerEvents {
     private val publisher = AtomicReference<((VisualizerEvent) -> Unit)?>(null)

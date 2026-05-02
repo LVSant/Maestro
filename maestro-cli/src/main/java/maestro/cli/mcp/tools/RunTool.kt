@@ -5,6 +5,7 @@ import io.modelcontextprotocol.kotlin.sdk.server.RegisteredTool
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
 import maestro.cli.mcp.McpMaestroSessionManager
+import maestro.cli.mcp.visualizer.CommandStatus
 import maestro.cli.mcp.visualizer.McpVisualizerEvents
 import maestro.cli.mcp.visualizer.VisualizerEvent
 import maestro.cli.util.WorkingDirectory
@@ -107,35 +108,28 @@ object RunTool {
         maestro: maestro.Maestro,
         flowId: String,
     ): Orchestra {
-        fun publishCommand(status: String, index: Int, command: MaestroCommand, error: Throwable? = null) {
-            val payload = buildMap<String, Any?> {
-                put("flowId", flowId)
-                put("index", index)
-                put("status", status)
-                put("commandType", command.asCommand()?.javaClass?.simpleName)
-                put("yaml", command.sourceInfo?.let { it.source.substring(it.startOffset, it.endOffset) })
-                put("callId", "$flowId:$index")
-                if (error != null) put("errorMessage", error.message)
-            }
-            McpVisualizerEvents.publish(VisualizerEvent(type = "maestro.command", payload = payload))
+        fun publishCommand(status: CommandStatus, index: Int, command: MaestroCommand, error: Throwable? = null) {
+            McpVisualizerEvents.publish(
+                VisualizerEvent.Command(
+                    status = status,
+                    flowId = flowId,
+                    index = index,
+                    callId = "$flowId:$index",
+                    commandType = command.asCommand()?.javaClass?.simpleName,
+                    yaml = command.sourceInfo?.let { it.source.substring(it.startOffset, it.endOffset) },
+                    errorMessage = error?.message,
+                )
+            )
         }
 
         return Orchestra(
             maestro = maestro,
-            onCommandStart = { index, command ->
-                publishCommand("started", index, command)
-            },
-            onCommandComplete = { index, command ->
-                publishCommand("completed", index, command)
-            },
-            onCommandWarned = { index, command ->
-                publishCommand("warned", index, command)
-            },
-            onCommandSkipped = { index, command ->
-                publishCommand("skipped", index, command)
-            },
+            onCommandStart = { index, command -> publishCommand(CommandStatus.STARTED, index, command) },
+            onCommandComplete = { index, command -> publishCommand(CommandStatus.COMPLETED, index, command) },
+            onCommandWarned = { index, command -> publishCommand(CommandStatus.WARNED, index, command) },
+            onCommandSkipped = { index, command -> publishCommand(CommandStatus.SKIPPED, index, command) },
             onCommandFailed = { index, command, error ->
-                publishCommand("failed", index, command, error)
+                publishCommand(CommandStatus.FAILED, index, command, error)
                 throw error
             },
         )
