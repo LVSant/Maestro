@@ -31,6 +31,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import maestro.cli.Dependencies
@@ -124,10 +125,12 @@ internal class McpVisualizerServer private constructor(
                 respondText(mapper.writeValueAsString(value), ContentType.Application.Json, status)
             }
 
-            fun deviceStreamTargets(): List<DeviceStreamTarget> =
-                DeviceService.listConnectedDevices()
-                    .filter { it.platform != Platform.WEB }
-                    .map { DeviceStreamTarget(it.platform.name.lowercase(), it.instanceId) }
+            suspend fun deviceStreamTargets(): List<DeviceStreamTarget> =
+                withContext(Dispatchers.IO) {
+                    DeviceService.listConnectedDevices()
+                        .filter { it.platform != Platform.WEB }
+                        .map { DeviceStreamTarget(it.platform.name.lowercase(), it.instanceId) }
+                }
 
             val eventRegistration = McpVisualizerEvents.register { event ->
                 scope.launch {

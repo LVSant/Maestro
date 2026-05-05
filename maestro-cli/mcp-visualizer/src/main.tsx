@@ -125,7 +125,7 @@ function StatusIcon({ status }: { status: string }) {
   switch (status) {
     case "started":
       return (
-        <svg className={`${common} text-sky-400`} viewBox="0 0 16 16" aria-hidden="true">
+        <svg className={`${common} text-sky-500`} viewBox="0 0 16 16" aria-hidden="true">
           <circle cx="8" cy="8" r="3" fill="currentColor" />
         </svg>
       );
@@ -149,20 +149,36 @@ function StatusIcon({ status }: { status: string }) {
       );
     case "skipped":
       return (
-        <svg className={`${common} text-neutral-600`} fill="none" viewBox="0 0 16 16" aria-hidden="true">
+        <svg className={`${common} text-neutral-400`} fill="none" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M4 8h8" strokeWidth="2" strokeLinecap="round" />
         </svg>
       );
     default:
       return (
-        <svg className={`${common} text-neutral-600`} fill="none" viewBox="0 0 16 16" aria-hidden="true">
+        <svg className={`${common} text-neutral-400`} fill="none" viewBox="0 0 16 16" aria-hidden="true">
           <circle cx="8" cy="8" r="1.25" fill="currentColor" stroke="none" />
         </svg>
       );
   }
 }
 
-function CommandsPanel({ rows }: { rows: TrackedMaestroCommand[] }) {
+// Each command's source yaml is the inner body (e.g. `tapOn:\n    text: Login`).
+// Render it as a YAML list item — `- ` on the first line, two-space indent on the rest —
+// so the panel reads like a runnable flow.
+function asYamlListItem(yaml: string): string {
+  const lines = yaml.split("\n");
+  return lines.map((line, i) => (i === 0 ? `- ${line}` : `  ${line}`)).join("\n");
+}
+
+function CommandsPanel({
+  rows,
+  collapsed,
+  onToggle,
+}: {
+  rows: TrackedMaestroCommand[];
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
   const listRef = React.useRef<HTMLOListElement | null>(null);
   const started = [...rows].reverse().find((r) => r.status === "started");
   const failed = [...rows].reverse().find((r) => r.status === "failed");
@@ -174,31 +190,75 @@ function CommandsPanel({ rows }: { rows: TrackedMaestroCommand[] }) {
     el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [lastActive?.callId, rows.length]);
 
+  if (collapsed) {
+    return (
+      <aside className="flex h-full shrink-0 flex-col items-center gap-2 border-r border-neutral-200 bg-neutral-50 py-2">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label="Expand Maestro Commands"
+          title="Expand Maestro Commands"
+          className="grid h-7 w-7 place-items-center rounded text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-800"
+        >
+          <ChevronIcon direction="right" />
+        </button>
+        <span
+          className="rotate-180 select-none text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-500"
+          style={{ writingMode: "vertical-rl" }}
+        >
+          Maestro Commands
+        </span>
+      </aside>
+    );
+  }
+
   return (
-    <aside className="flex max-h-[calc(100vh-2rem)] min-h-0 w-80 shrink-0 flex-col overflow-hidden py-1 pl-1 pr-2 font-mono text-sm leading-5 text-neutral-500">
-      {rows.length === 0 ? (
-        <p className="pr-1 text-neutral-600">Run a flow to see steps here.</p>
-      ) : (
-        <ol ref={listRef} className="min-h-0 flex-1 list-none gap-0 overflow-y-auto [&>li]:mt-0">
-          {rows.map((row) => (
-            <li
-              key={row.callId}
-              data-call-id={row.callId}
-              className={`flex gap-2 py-0 leading-5 ${lastActive?.callId === row.callId ? "text-neutral-300" : ""}`}
-            >
-              <span className="sr-only">{row.status}</span>
-              <StatusIcon status={row.status} />
-              <div className="min-w-0 flex-1 leading-5">
-                <pre className="m-0 whitespace-pre-wrap break-words leading-[inherit]">{row.yaml}</pre>
-                {row.errorMessage && row.status === "failed" ? (
-                  <p className="mt-0 text-xs leading-4 text-red-400/90">{row.errorMessage}</p>
-                ) : null}
-              </div>
-            </li>
-          ))}
-        </ol>
-      )}
+    <aside className="flex h-full w-80 shrink-0 flex-col border-r border-neutral-200 bg-neutral-50">
+      <header className="flex h-8 shrink-0 items-center justify-between border-b border-neutral-200 px-2">
+        <h2 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-700">Maestro Commands</h2>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label="Collapse Maestro Commands"
+          title="Collapse Maestro Commands"
+          className="grid h-6 w-6 place-items-center rounded text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-800"
+        >
+          <ChevronIcon direction="left" />
+        </button>
+      </header>
+      <div className="min-h-0 flex-1 overflow-hidden font-mono text-sm leading-5 text-neutral-600">
+        {rows.length === 0 ? (
+          <p className="px-3 pt-2 text-neutral-500">Run a flow to see steps here.</p>
+        ) : (
+          <ol ref={listRef} className="m-0 h-full list-none overflow-y-auto px-2 py-1.5 [&>li]:mt-0">
+            {rows.map((row) => (
+              <li
+                key={row.callId}
+                data-call-id={row.callId}
+                className={`flex gap-2 py-0 leading-5 ${lastActive?.callId === row.callId ? "text-neutral-900" : ""}`}
+              >
+                <span className="sr-only">{row.status}</span>
+                <StatusIcon status={row.status} />
+                <div className="min-w-0 flex-1 leading-5">
+                  <pre className="m-0 whitespace-pre-wrap break-words leading-[inherit]">{asYamlListItem(row.yaml)}</pre>
+                  {row.errorMessage && row.status === "failed" ? (
+                    <p className="mt-0 text-xs leading-4 text-red-600">{row.errorMessage}</p>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
     </aside>
+  );
+}
+
+function ChevronIcon({ direction }: { direction: "left" | "right" }) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+      {direction === "left" ? <path d="M10 4 6 8l4 4" /> : <path d="M6 4l4 4-4 4" />}
+    </svg>
   );
 }
 
@@ -487,7 +547,7 @@ function HardwareButton({ name, label, hideForPlatform, platform, children }: {
         sendInput({ kind: "button", action: "Down", name });
         window.setTimeout(() => sendInput({ kind: "button", action: "Up", name }), 80);
       }}
-      className="grid h-10 w-10 place-items-center rounded-md border border-neutral-700 bg-neutral-800 text-neutral-200 transition hover:bg-neutral-700 active:bg-neutral-900"
+      className="grid h-10 w-10 place-items-center rounded-md border border-neutral-200 bg-white text-neutral-700 shadow-sm transition hover:bg-neutral-50 active:bg-neutral-100"
     >
       {children}
     </button>
@@ -497,7 +557,7 @@ function HardwareButton({ name, label, hideForPlatform, platform, children }: {
 function HardwareRail({ platform }: { platform?: string }) {
   if (platform !== "android" && platform !== "ios") return null;
   return (
-    <div className="flex shrink-0 flex-col gap-1.5 self-center rounded-lg border border-neutral-800 bg-neutral-900 p-1.5">
+    <div className="flex shrink-0 flex-col gap-1.5 self-start rounded-lg border border-neutral-200 bg-neutral-50 p-1.5">
       <HardwareButton name="power" label="Power">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
           <path d="M12 3v9" /><path d="M7 7a7 7 0 1 0 10 0" />
@@ -513,7 +573,7 @@ function HardwareRail({ platform }: { platform?: string }) {
           <path d="M5 12h14" />
         </svg>
       </HardwareButton>
-      <div className="my-1 h-px bg-neutral-800" />
+      <div className="my-1 h-px bg-neutral-200" />
       <HardwareButton name="back" label="Back" hideForPlatform="ios" platform={platform}>
         <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M15 5 L7 12 L15 19 Z" /></svg>
       </HardwareButton>
@@ -535,6 +595,7 @@ function App() {
   const [overlays, setOverlays] = React.useState<DeviceOverlay[]>([]);
   const [commandRows, setCommandRows] = React.useState<TrackedMaestroCommand[]>([]);
   const [deviceState, setDeviceState] = React.useState<DeviceState>({ status: "idle" });
+  const [commandsCollapsed, setCommandsCollapsed] = React.useState(false);
   const didAutoStartDeviceStream = React.useRef(false);
 
   useInputFlushLoop();
@@ -615,12 +676,17 @@ function App() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-start bg-neutral-950 p-4 font-mono">
-      <div className="flex max-w-full items-start gap-4">
+    <main className="flex h-screen items-stretch overflow-hidden bg-neutral-100 font-mono text-neutral-700">
+      <CommandsPanel
+        rows={commandRows}
+        collapsed={commandsCollapsed}
+        onToggle={() => setCommandsCollapsed((c) => !c)}
+      />
+      <div className="flex min-w-0 flex-1 items-start gap-4 p-4">
         {deviceState.status === "streaming" ? (
           <>
-            <div className="relative shrink-0 overflow-hidden rounded-[2rem] bg-black shadow-2xl shadow-black/40">
-              <img className="block max-h-[calc(100vh-2rem)] w-auto max-w-[calc(100vw-24rem)]" src="/api/device/stream" draggable={false} />
+            <div className="relative shrink-0 overflow-hidden rounded-[2rem] bg-neutral-900 shadow-xl shadow-neutral-300/60 ring-1 ring-neutral-200">
+              <img className="block max-h-[calc(100vh-2rem)] w-auto" src="/api/device/stream" draggable={false} />
               <div className="pointer-events-none absolute inset-0">
                 <DeviceOverlayCanvas overlays={overlays} />
                 {overlays
@@ -632,16 +698,15 @@ function App() {
             <HardwareRail platform={deviceState.platform} />
           </>
         ) : (
-          <div className="grid h-[70vh] w-full max-w-sm shrink-0 place-items-center rounded-[2rem] bg-black text-xs text-neutral-500 shadow-2xl shadow-black/40">
-            <div>
+          <div className="grid h-[70vh] w-full max-w-sm shrink-0 place-items-center rounded-[2rem] border border-neutral-200 bg-white text-xs text-neutral-500 shadow-xl shadow-neutral-300/60">
+            <div className="text-center">
               <div>no device stream</div>
               {deviceState.message && (
-                <div className="mt-2 max-w-xs whitespace-pre-wrap text-neutral-600">{deviceState.message}</div>
+                <div className="mt-2 max-w-xs whitespace-pre-wrap text-neutral-400">{deviceState.message}</div>
               )}
             </div>
           </div>
         )}
-        <CommandsPanel rows={commandRows} />
       </div>
     </main>
   );
