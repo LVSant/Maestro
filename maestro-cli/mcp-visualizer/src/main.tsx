@@ -171,63 +171,6 @@ function asYamlListItem(yaml: string): string {
   return lines.map((line, i) => (i === 0 ? `- ${line}` : `  ${line}`)).join("\n");
 }
 
-type OverflowItem = { label: string; onSelect: () => void };
-
-function OverflowMenu({ items, disabled }: { items: OverflowItem[]; disabled?: boolean }) {
-  const [open, setOpen] = React.useState(false);
-  const wrapRef = React.useRef<HTMLDivElement | null>(null);
-
-  React.useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div className="relative" ref={wrapRef}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        disabled={disabled}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label="More actions"
-        title="More actions"
-        className="grid h-6 w-6 place-items-center rounded text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-neutral-500"
-      >
-        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" className="h-3.5 w-3.5">
-          <circle cx="3.5" cy="8" r="1.25" />
-          <circle cx="8" cy="8" r="1.25" />
-          <circle cx="12.5" cy="8" r="1.25" />
-        </svg>
-      </button>
-      {open && (
-        <div role="menu" className="absolute right-0 top-full z-10 mt-1 min-w-[140px] overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-sm text-neutral-700 shadow-lg shadow-neutral-300/40">
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              role="menuitem"
-              onClick={() => { setOpen(false); item.onSelect(); }}
-              className="block w-full px-3 py-1.5 text-left transition hover:bg-neutral-100"
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function CommandsPanel({
   rows,
   collapsed,
@@ -277,10 +220,20 @@ function CommandsPanel({
       <header className="flex h-8 shrink-0 items-center justify-between border-b border-neutral-200 px-2">
         <h2 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-700">Maestro Commands</h2>
         <div className="flex items-center gap-0.5">
-          <OverflowMenu
+          <button
+            type="button"
+            onClick={onClear}
             disabled={rows.length === 0}
-            items={[{ label: "Clear log", onSelect: onClear }]}
-          />
+            aria-label="Clear log"
+            title="Clear log"
+            className="grid h-6 w-6 place-items-center rounded text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-neutral-500"
+          >
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="h-3.5 w-3.5">
+              <path d="M3 4.5h10" />
+              <path d="M6.5 4.5V3.5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1" />
+              <path d="M4.5 4.5l.5 8a1 1 0 0 0 1 .9h4a1 1 0 0 0 1-.9l.5-8" />
+            </svg>
+          </button>
           <button
             type="button"
             onClick={onToggle}
@@ -294,7 +247,7 @@ function CommandsPanel({
       </header>
       <div className="min-h-0 flex-1 overflow-hidden font-mono text-sm leading-5 text-neutral-600">
         {rows.length === 0 ? (
-          <p className="px-3 pt-2 text-neutral-500">Run a flow to see steps here.</p>
+          <p className="px-3 pt-2 text-neutral-400">Commands executed by Maestro MCP</p>
         ) : (
           <ol ref={listRef} className="m-0 h-full list-none overflow-y-auto px-2 pt-2 pb-8 [&>li]:mt-0">
             {rows.map((row) => {
