@@ -249,7 +249,7 @@ function CommandsPanel({
         {rows.length === 0 ? (
           <p className="px-3 pt-2 text-neutral-400">Commands executed by Maestro MCP</p>
         ) : (
-          <ol ref={listRef} className="m-0 h-full list-none overflow-y-auto px-2 pt-2 pb-8 [&>li]:mt-0">
+          <ol ref={listRef} className="m-0 h-full list-none overflow-y-auto pl-2 pt-2 pb-8 [&>li]:mt-0">
             {rows.map((row) => {
               const running = row.status === "started";
               return (
@@ -257,9 +257,12 @@ function CommandsPanel({
                   key={row.callId}
                   data-call-id={row.callId}
                   className={
-                    "flex gap-2 rounded px-1.5 py-0.5 leading-5 transition-colors " +
+                    // Keep rounded-l on every row so the running highlight's left corners
+                    // don't snap from rounded to square mid-fade when the status flips and
+                    // transition-colors animates bg from sky-900 back to transparent.
+                    "flex gap-2 rounded-l py-0.5 pl-3 pr-2 leading-5 transition-colors " +
                     (running
-                      ? "bg-sky-100/70 text-neutral-900 ring-1 ring-sky-300/70"
+                      ? "bg-sky-900 text-sky-50"
                       : row.status === "failed"
                         ? "text-neutral-900"
                         : "")
