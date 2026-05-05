@@ -594,7 +594,7 @@ function HardwareButton({ name, label, hideForPlatform, platform, children }: {
         sendInput({ kind: "button", action: "Down", name });
         window.setTimeout(() => sendInput({ kind: "button", action: "Up", name }), 80);
       }}
-      className="grid h-10 w-10 place-items-center rounded-md border border-white/40 bg-white/50 text-neutral-700 shadow-sm backdrop-blur transition hover:bg-white/70 active:bg-white/90"
+      className="grid h-10 w-10 place-items-center rounded-md border border-white/40 bg-white/40 text-neutral-700 shadow-sm backdrop-blur transition hover:border-white/70 hover:bg-white/85 hover:text-neutral-900 active:scale-95 active:bg-white/95 active:shadow-inner"
     >
       {children}
     </button>
