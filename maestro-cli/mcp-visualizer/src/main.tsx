@@ -125,8 +125,9 @@ function StatusIcon({ status }: { status: string }) {
   switch (status) {
     case "started":
       return (
-        <svg className={`${common} text-sky-500`} viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="8" cy="8" r="3" fill="currentColor" />
+        <svg className={`${common} animate-spin text-sky-500`} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeOpacity="0.25" />
+          <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
         </svg>
       );
     case "completed":
@@ -170,25 +171,84 @@ function asYamlListItem(yaml: string): string {
   return lines.map((line, i) => (i === 0 ? `- ${line}` : `  ${line}`)).join("\n");
 }
 
+type OverflowItem = { label: string; onSelect: () => void };
+
+function OverflowMenu({ items, disabled }: { items: OverflowItem[]; disabled?: boolean }) {
+  const [open, setOpen] = React.useState(false);
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={wrapRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="More actions"
+        title="More actions"
+        className="grid h-6 w-6 place-items-center rounded text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-neutral-500"
+      >
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" className="h-3.5 w-3.5">
+          <circle cx="3.5" cy="8" r="1.25" />
+          <circle cx="8" cy="8" r="1.25" />
+          <circle cx="12.5" cy="8" r="1.25" />
+        </svg>
+      </button>
+      {open && (
+        <div role="menu" className="absolute right-0 top-full z-10 mt-1 min-w-[140px] overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-sm text-neutral-700 shadow-lg shadow-neutral-300/40">
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              onClick={() => { setOpen(false); item.onSelect(); }}
+              className="block w-full px-3 py-1.5 text-left transition hover:bg-neutral-100"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CommandsPanel({
   rows,
   collapsed,
   onToggle,
+  onClear,
 }: {
   rows: TrackedMaestroCommand[];
   collapsed: boolean;
   onToggle: () => void;
+  onClear: () => void;
 }) {
   const listRef = React.useRef<HTMLOListElement | null>(null);
-  const started = [...rows].reverse().find((r) => r.status === "started");
-  const failed = [...rows].reverse().find((r) => r.status === "failed");
-  const lastActive = started ?? failed ?? (rows.length ? rows[rows.length - 1] : undefined);
 
+  // Snap to the very bottom (past the list's bottom padding) on every rows update.
+  // `rows` reference changes on every event so status flips and late-arriving error
+  // messages also trigger a re-scroll.
   React.useEffect(() => {
-    if (!lastActive || !listRef.current) return;
-    const el = listRef.current.querySelector(`[data-call-id="${CSS.escape(lastActive.callId)}"]`);
-    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [lastActive?.callId, rows.length]);
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [rows]);
 
   if (collapsed) {
     return (
@@ -216,37 +276,53 @@ function CommandsPanel({
     <aside className="flex h-full w-80 shrink-0 flex-col border-r border-neutral-200 bg-neutral-50">
       <header className="flex h-8 shrink-0 items-center justify-between border-b border-neutral-200 px-2">
         <h2 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-700">Maestro Commands</h2>
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-label="Collapse Maestro Commands"
-          title="Collapse Maestro Commands"
-          className="grid h-6 w-6 place-items-center rounded text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-800"
-        >
-          <ChevronIcon direction="left" />
-        </button>
+        <div className="flex items-center gap-0.5">
+          <OverflowMenu
+            disabled={rows.length === 0}
+            items={[{ label: "Clear log", onSelect: onClear }]}
+          />
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label="Collapse Maestro Commands"
+            title="Collapse Maestro Commands"
+            className="grid h-6 w-6 place-items-center rounded text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-800"
+          >
+            <ChevronIcon direction="left" />
+          </button>
+        </div>
       </header>
       <div className="min-h-0 flex-1 overflow-hidden font-mono text-sm leading-5 text-neutral-600">
         {rows.length === 0 ? (
           <p className="px-3 pt-2 text-neutral-500">Run a flow to see steps here.</p>
         ) : (
-          <ol ref={listRef} className="m-0 h-full list-none overflow-y-auto px-2 py-1.5 [&>li]:mt-0">
-            {rows.map((row) => (
-              <li
-                key={row.callId}
-                data-call-id={row.callId}
-                className={`flex gap-2 py-0 leading-5 ${lastActive?.callId === row.callId ? "text-neutral-900" : ""}`}
-              >
-                <span className="sr-only">{row.status}</span>
-                <StatusIcon status={row.status} />
-                <div className="min-w-0 flex-1 leading-5">
-                  <pre className="m-0 whitespace-pre-wrap break-words leading-[inherit]">{asYamlListItem(row.yaml)}</pre>
-                  {row.errorMessage && row.status === "failed" ? (
-                    <p className="mt-0 text-xs leading-4 text-red-600">{row.errorMessage}</p>
-                  ) : null}
-                </div>
-              </li>
-            ))}
+          <ol ref={listRef} className="m-0 h-full list-none overflow-y-auto px-2 pt-2 pb-8 [&>li]:mt-0">
+            {rows.map((row) => {
+              const running = row.status === "started";
+              return (
+                <li
+                  key={row.callId}
+                  data-call-id={row.callId}
+                  className={
+                    "flex gap-2 rounded px-1.5 py-0.5 leading-5 transition-colors " +
+                    (running
+                      ? "bg-sky-100/70 text-neutral-900 ring-1 ring-sky-300/70"
+                      : row.status === "failed"
+                        ? "text-neutral-900"
+                        : "")
+                  }
+                >
+                  <span className="sr-only">{row.status}</span>
+                  <StatusIcon status={row.status} />
+                  <div className="min-w-0 flex-1 leading-5">
+                    <pre className="m-0 whitespace-pre overflow-x-auto leading-[inherit]">{asYamlListItem(row.yaml)}</pre>
+                    {row.errorMessage && row.status === "failed" ? (
+                      <p className="mt-0 text-xs leading-4 text-red-600">{row.errorMessage}</p>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
           </ol>
         )}
       </div>
@@ -681,6 +757,7 @@ function App() {
         rows={commandRows}
         collapsed={commandsCollapsed}
         onToggle={() => setCommandsCollapsed((c) => !c)}
+        onClear={() => setCommandRows([])}
       />
       <div className="flex min-w-0 flex-1 items-start gap-4 p-4">
         {deviceState.status === "streaming" ? (
