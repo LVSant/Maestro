@@ -121,13 +121,13 @@ function upsertMaestroCommand(rows: TrackedMaestroCommand[], event: VisualizerEv
 }
 
 function StatusIcon({ status }: { status: string }) {
-  const common = "mt-[3px] h-4 w-4 shrink-0 stroke-current";
+  const common = "mt-[2px] h-4 w-4 shrink-0 stroke-current";
   switch (status) {
     case "started":
       return (
-        <svg className={`${common} animate-spin text-sky-500`} viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeOpacity="0.25" />
-          <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <svg className={`${common} animate-spin text-white`} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeOpacity="0.3" />
+          <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeOpacity="0.85" strokeLinecap="round" />
         </svg>
       );
     case "completed":
@@ -260,9 +260,9 @@ function CommandsPanel({
                     // Keep rounded-l on every row so the running highlight's left corners
                     // don't snap from rounded to square mid-fade when the status flips and
                     // transition-colors animates bg from sky-900 back to transparent.
-                    "flex gap-2 rounded-l py-0.5 pl-3 pr-2 leading-5 transition-colors " +
+                    "flex gap-2 rounded-l-xl py-0.5 pl-1.5 pr-2 leading-5 transition-colors " +
                     (running
-                      ? "bg-sky-900 text-sky-50"
+                      ? "bg-sky-800 text-sky-50"
                       : row.status === "failed"
                         ? "text-neutral-900"
                         : "")
@@ -707,6 +707,20 @@ function App() {
     setDeviceState(await response.json());
   }
 
+  const isRunning = commandRows.some((r) => r.status === "started");
+  // Hold the "running" tint for a moment after the last command stops so the bg
+  // doesn't flicker between commands (which arrive ~100ms apart). Going to running
+  // is instant; leaving running is debounced.
+  const [showRunning, setShowRunning] = React.useState(false);
+  React.useEffect(() => {
+    if (isRunning) {
+      setShowRunning(true);
+      return;
+    }
+    const t = window.setTimeout(() => setShowRunning(false), 600);
+    return () => window.clearTimeout(t);
+  }, [isRunning]);
+
   return (
     <main className="flex h-screen items-stretch overflow-hidden bg-neutral-100 font-mono text-neutral-700">
       <CommandsPanel
@@ -715,10 +729,20 @@ function App() {
         onToggle={() => setCommandsCollapsed((c) => !c)}
         onClear={() => setCommandRows([])}
       />
-      <div className="flex min-w-0 flex-1 items-start gap-4 p-4">
+      <div
+        className={
+          "flex min-w-0 flex-1 items-start gap-4 p-4 transition-colors duration-500 " +
+          (showRunning ? "bg-sky-100" : "bg-neutral-100")
+        }
+      >
         {deviceState.status === "streaming" ? (
           <>
-            <div className="relative shrink-0 overflow-hidden rounded-[2rem] bg-neutral-900 shadow-xl shadow-neutral-300/60 ring-1 ring-neutral-200">
+            <div
+              className={
+                "relative shrink-0 overflow-hidden rounded-[2rem] bg-neutral-900 shadow-xl shadow-neutral-300/60 transition-shadow duration-500 " +
+                (showRunning ? "ring-4 ring-sky-800" : "ring-1 ring-neutral-200")
+              }
+            >
               <img className="block max-h-[calc(100vh-2rem)] w-auto" src="/api/device/stream" draggable={false} />
               <div className="pointer-events-none absolute inset-0">
                 <DeviceOverlayCanvas overlays={overlays} />
