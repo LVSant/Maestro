@@ -39,6 +39,7 @@ import maestro.device.DeviceService
 import maestro.device.Platform
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 
@@ -51,6 +52,36 @@ internal data class DeviceStreamState(
 )
 
 private data class DeviceStreamTarget(val platform: String, val deviceId: String)
+
+// Mirrors simulator-server's stdin protocol — see device-preview branch's StreamServer.
+// Coordinates are normalized [0.0, 1.0]; key codes are HID Usage IDs.
+internal data class DeviceInputCommand(
+    val kind: String,
+    val action: String? = null,
+    val x: Double? = null,
+    val y: Double? = null,
+    val x2: Double? = null,
+    val y2: Double? = null,
+    val code: Int? = null,
+    val name: String? = null,
+    val dx: Double? = null,
+    val dy: Double? = null,
+    val text: String? = null,
+    val orientation: String? = null,
+) {
+    fun toStdinLine(): String? = when (kind) {
+        "touch" -> buildString {
+            append("touch ").append(action).append(' ').append(x).append(',').append(y)
+            if (x2 != null && y2 != null) append(' ').append(x2).append(',').append(y2)
+        }
+        "key" -> "key $action $code"
+        "button" -> "button $action $name"
+        "wheel" -> "wheel $x,$y --dx $dx --dy $dy"
+        "rotate" -> "rotate $orientation"
+        "paste" -> "paste ${text ?: ""}"
+        else -> null
+    }
+}
 
 internal class McpVisualizerServer private constructor(
     val port: Int,
@@ -129,6 +160,20 @@ internal class McpVisualizerServer private constructor(
                         }
                         call.respondJson(deviceStream.start(platform, deviceId))
                     }
+                    post("/api/device/input") {
+                        val command = runCatching { mapper.readValue<DeviceInputCommand>(call.receiveText()) }
+                            .getOrNull()
+                        val line = command?.toStdinLine()
+                        if (line == null) {
+                            call.respondJson(mapOf("error" to "invalid input command"), HttpStatusCode.BadRequest)
+                            return@post
+                        }
+                        if (!deviceStream.sendInput(line)) {
+                            call.respondJson(mapOf("error" to "no active device stream"), HttpStatusCode.Conflict)
+                            return@post
+                        }
+                        call.respondJson(mapOf("ok" to true))
+                    }
                     get("/api/device/stream") {
                         val state = deviceStream.state
                         val streamUrl = state.streamUrl
@@ -165,6 +210,8 @@ private class DeviceStream(
     private val onStateChange: suspend (DeviceStreamState) -> Unit,
 ) : AutoCloseable {
     private var process: Process? = null
+    private var stdinWriter: OutputStreamWriter? = null
+    private val stdinLock = Any()
 
     @Volatile
     var state: DeviceStreamState = DeviceStreamState(status = "idle")
@@ -185,8 +232,13 @@ private class DeviceStream(
             val p = ProcessBuilder(
                 Dependencies.simulatorServerBinary().absolutePath,
                 platform, "--id", deviceId,
-            ).redirectErrorStream(true).start()
+            ).redirectErrorStream(false).start()
             process = p
+            stdinWriter = OutputStreamWriter(p.outputStream)
+            // Drain stderr so the child's pipe never fills, and surface its output for debugging.
+            Thread({
+                runCatching { BufferedReader(InputStreamReader(p.errorStream)).forEachLine { System.err.println("[simulator-server] $it") } }
+            }, "mcp-visualizer-simulator-stderr").apply { isDaemon = true }.start()
             val streamUrl = awaitStreamReady(p)
             setState(DeviceStreamState(
                 status = "streaming",
@@ -207,7 +259,24 @@ private class DeviceStream(
         return state
     }
 
+    fun sendInput(line: String): Boolean {
+        val writer = stdinWriter ?: return false
+        synchronized(stdinLock) {
+            return try {
+                writer.write(line)
+                writer.write("\n")
+                writer.flush()
+                true
+            } catch (e: Throwable) {
+                System.err.println("[mcp-visualizer] failed to write input to simulator-server: ${e.message}")
+                false
+            }
+        }
+    }
+
     override fun close() {
+        runCatching { stdinWriter?.close() }
+        stdinWriter = null
         val p = process ?: return
         p.destroy()
         if (!p.waitFor(2, TimeUnit.SECONDS)) p.destroyForcibly()
@@ -227,8 +296,8 @@ private class DeviceStream(
             System.err.println("[simulator-server] $line")
             if (line.startsWith("stream_ready ")) {
                 // Drain the rest in the background so the child's stdout pipe doesn't block.
-                Thread { runCatching { reader.forEachLine { System.err.println("[simulator-server] $it") } } }
-                    .apply { isDaemon = true }.start()
+                Thread({ runCatching { reader.forEachLine { System.err.println("[simulator-server] $it") } } },
+                    "mcp-visualizer-simulator-stdout").apply { isDaemon = true }.start()
                 return line.removePrefix("stream_ready ").trim()
             }
         }

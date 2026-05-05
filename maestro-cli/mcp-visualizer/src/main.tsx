@@ -344,11 +344,201 @@ function InputTextOverlay({ overlay }: { overlay: Extract<DeviceOverlay, { kind:
   );
 }
 
+// Forwards user input to simulator-server's stdin protocol via /api/device/input.
+// We send raw touch Down/Move/Up events (matching the device-preview branch) rather
+// than synthesizing tap/swipe — the simulator interprets short presses as taps and
+// drags as swipes natively, which feels more responsive than driver-mediated gestures.
+type InputCommand =
+  | { kind: "touch"; action: "Down" | "Move" | "Up"; x: string; y: string }
+  | { kind: "key"; action: "Down" | "Up"; code: number }
+  | { kind: "button"; action: "Down" | "Up"; name: string };
+
+let pendingMove: InputCommand | null = null;
+
+function dispatchInput(cmd: InputCommand) {
+  fetch("/api/device/input", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cmd),
+  }).catch(() => {});
+}
+
+function flushInput() {
+  if (!pendingMove) return;
+  const cmd = pendingMove;
+  pendingMove = null;
+  dispatchInput(cmd);
+}
+
+// Coalesce rapid Move events to one per animation frame so we don't flood the server
+// and starve the MJPEG stream — matches the device-preview frontend's approach.
+function sendInput(cmd: InputCommand) {
+  if (cmd.kind === "touch" && cmd.action === "Move") {
+    pendingMove = cmd;
+    return;
+  }
+  if (pendingMove) flushInput();
+  dispatchInput(cmd);
+}
+
+function useInputFlushLoop() {
+  React.useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      flushInput();
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(raf);
+  }, []);
+}
+
+// USB HID Usage IDs (HID Usage Tables §10), as expected by simulator-server.
+const HID: Record<string, number> = {
+  KeyA: 4, KeyB: 5, KeyC: 6, KeyD: 7, KeyE: 8, KeyF: 9, KeyG: 10, KeyH: 11,
+  KeyI: 12, KeyJ: 13, KeyK: 14, KeyL: 15, KeyM: 16, KeyN: 17, KeyO: 18, KeyP: 19,
+  KeyQ: 20, KeyR: 21, KeyS: 22, KeyT: 23, KeyU: 24, KeyV: 25, KeyW: 26, KeyX: 27,
+  KeyY: 28, KeyZ: 29,
+  Digit1: 30, Digit2: 31, Digit3: 32, Digit4: 33, Digit5: 34,
+  Digit6: 35, Digit7: 36, Digit8: 37, Digit9: 38, Digit0: 39,
+  Enter: 40, Escape: 41, Backspace: 42, Tab: 43, Space: 44,
+  Minus: 45, Equal: 46, BracketLeft: 47, BracketRight: 48, Backslash: 49,
+  Semicolon: 51, Quote: 52, Backquote: 53, Comma: 54, Period: 55, Slash: 56,
+  ArrowRight: 79, ArrowLeft: 80, ArrowDown: 81, ArrowUp: 82,
+};
+
+function useKeyboardInput() {
+  React.useEffect(() => {
+    function handle(action: "Down" | "Up", e: KeyboardEvent): boolean {
+      if (e.metaKey || e.ctrlKey) return false; // leave browser shortcuts alone
+      const tag = (e.target as Element | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return false;
+      const code = HID[e.code];
+      if (code == null) return false;
+      sendInput({ kind: "key", action, code });
+      return true;
+    }
+    const onDown = (e: KeyboardEvent) => { if (handle("Down", e)) e.preventDefault(); };
+    const onUp = (e: KeyboardEvent) => { if (handle("Up", e)) e.preventDefault(); };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+    };
+  }, []);
+}
+
+function GestureLayer() {
+  const draggingRef = React.useRef(false);
+
+  function devicePoint(e: React.PointerEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
+    const y = Math.min(Math.max((e.clientY - rect.top) / rect.height, 0), 1);
+    return { x: x.toFixed(5), y: y.toFixed(5) };
+  }
+
+  return (
+    <div
+      className="absolute inset-0 cursor-crosshair touch-none select-none"
+      onPointerDown={(e) => {
+        draggingRef.current = true;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        const p = devicePoint(e);
+        sendInput({ kind: "touch", action: "Down", x: p.x, y: p.y });
+      }}
+      onPointerMove={(e) => {
+        if (!draggingRef.current) return;
+        const p = devicePoint(e);
+        sendInput({ kind: "touch", action: "Move", x: p.x, y: p.y });
+      }}
+      onPointerUp={(e) => {
+        if (!draggingRef.current) return;
+        draggingRef.current = false;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+        const p = devicePoint(e);
+        sendInput({ kind: "touch", action: "Up", x: p.x, y: p.y });
+      }}
+      onPointerCancel={(e) => {
+        if (!draggingRef.current) return;
+        draggingRef.current = false;
+        const p = devicePoint(e);
+        sendInput({ kind: "touch", action: "Up", x: p.x, y: p.y });
+      }}
+    />
+  );
+}
+
+function HardwareButton({ name, label, hideForPlatform, platform, children }: {
+  name: string;
+  label: string;
+  hideForPlatform?: string;
+  platform?: string;
+  children: React.ReactNode;
+}) {
+  if (hideForPlatform && platform === hideForPlatform) return null;
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={() => {
+        sendInput({ kind: "button", action: "Down", name });
+        window.setTimeout(() => sendInput({ kind: "button", action: "Up", name }), 80);
+      }}
+      className="grid h-10 w-10 place-items-center rounded-md border border-neutral-700 bg-neutral-800 text-neutral-200 transition hover:bg-neutral-700 active:bg-neutral-900"
+    >
+      {children}
+    </button>
+  );
+}
+
+function HardwareRail({ platform }: { platform?: string }) {
+  if (platform !== "android" && platform !== "ios") return null;
+  return (
+    <div className="flex shrink-0 flex-col gap-1.5 self-center rounded-lg border border-neutral-800 bg-neutral-900 p-1.5">
+      <HardwareButton name="power" label="Power">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+          <path d="M12 3v9" /><path d="M7 7a7 7 0 1 0 10 0" />
+        </svg>
+      </HardwareButton>
+      <HardwareButton name="volumeUp" label="Volume up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4">
+          <path d="M12 5v14" /><path d="M5 12h14" />
+        </svg>
+      </HardwareButton>
+      <HardwareButton name="volumeDown" label="Volume down">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4">
+          <path d="M5 12h14" />
+        </svg>
+      </HardwareButton>
+      <div className="my-1 h-px bg-neutral-800" />
+      <HardwareButton name="back" label="Back" hideForPlatform="ios" platform={platform}>
+        <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M15 5 L7 12 L15 19 Z" /></svg>
+      </HardwareButton>
+      <HardwareButton name="home" label="Home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+          <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z" />
+        </svg>
+      </HardwareButton>
+      <HardwareButton name="appSwitch" label="Recents">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+          <rect x="6" y="6" width="12" height="12" rx="1.2" />
+        </svg>
+      </HardwareButton>
+    </div>
+  );
+}
+
 function App() {
   const [overlays, setOverlays] = React.useState<DeviceOverlay[]>([]);
   const [commandRows, setCommandRows] = React.useState<TrackedMaestroCommand[]>([]);
   const [deviceState, setDeviceState] = React.useState<DeviceState>({ status: "idle" });
   const didAutoStartDeviceStream = React.useRef(false);
+
+  useInputFlushLoop();
+  useKeyboardInput();
 
   React.useEffect(() => {
     const stream = new EventSource("/api/events/stream");
@@ -428,15 +618,19 @@ function App() {
     <main className="flex min-h-screen items-center justify-start bg-neutral-950 p-4 font-mono">
       <div className="flex max-w-full items-start gap-4">
         {deviceState.status === "streaming" ? (
-          <div className="relative shrink-0 overflow-hidden rounded-[2rem] bg-black shadow-2xl shadow-black/40">
-            <img className="block max-h-[calc(100vh-2rem)] w-auto max-w-[calc(100vw-24rem)]" src="/api/device/stream" />
-            <div className="pointer-events-none absolute inset-0">
-              <DeviceOverlayCanvas overlays={overlays} />
-              {overlays
-                .filter((overlay): overlay is Extract<DeviceOverlay, { kind: "input_text" }> => overlay.kind === "input_text")
-                .map((overlay) => <InputTextOverlay key={overlay.id} overlay={overlay} />)}
+          <>
+            <div className="relative shrink-0 overflow-hidden rounded-[2rem] bg-black shadow-2xl shadow-black/40">
+              <img className="block max-h-[calc(100vh-2rem)] w-auto max-w-[calc(100vw-24rem)]" src="/api/device/stream" draggable={false} />
+              <div className="pointer-events-none absolute inset-0">
+                <DeviceOverlayCanvas overlays={overlays} />
+                {overlays
+                  .filter((overlay): overlay is Extract<DeviceOverlay, { kind: "input_text" }> => overlay.kind === "input_text")
+                  .map((overlay) => <InputTextOverlay key={overlay.id} overlay={overlay} />)}
+              </div>
+              <GestureLayer />
             </div>
-          </div>
+            <HardwareRail platform={deviceState.platform} />
+          </>
         ) : (
           <div className="grid h-[70vh] w-full max-w-sm shrink-0 place-items-center rounded-[2rem] bg-black text-xs text-neutral-500 shadow-2xl shadow-black/40">
             <div>
