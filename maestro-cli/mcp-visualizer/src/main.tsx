@@ -120,14 +120,25 @@ function upsertMaestroCommand(rows: TrackedMaestroCommand[], event: VisualizerEv
   return copy.sort((a, b) => a.sequence - b.sequence);
 }
 
+function MaestroLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 180 180" className={className} aria-hidden="true">
+      <path
+        d="M146.478 30H29V151H80.1327C74.8347 149.081 70.256 145.577 67.0185 140.965C63.781 136.353 62.0417 130.856 62.0369 125.221C62.0344 121.613 62.7429 118.039 64.1219 114.705C65.5009 111.371 67.5234 108.341 70.0738 105.789C72.6243 103.237 75.6526 101.212 78.9859 99.8307C82.3191 98.4493 85.8919 97.7383 89.5 97.7383C96.7836 97.7383 103.769 100.632 108.919 105.782C114.07 110.932 116.963 117.918 116.963 125.201C116.958 130.836 115.219 136.333 111.981 140.945C108.744 145.557 104.165 149.061 98.8672 150.981H150V30H146.478Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
 function StatusIcon({ status }: { status: string }) {
   const common = "mt-[2px] h-4 w-4 shrink-0 stroke-current";
   switch (status) {
     case "started":
       return (
-        <svg className={`${common} animate-spin text-white`} viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeOpacity="0.3" />
-          <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeOpacity="0.85" strokeLinecap="round" />
+        <svg className={`${common} animate-spin text-sky-700`} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeOpacity="0.25" />
+          <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
         </svg>
       );
     case "completed":
@@ -199,17 +210,18 @@ function CommandsPanel({
         <button
           type="button"
           onClick={onToggle}
-          aria-label="Expand Maestro Commands"
-          title="Expand Maestro Commands"
+          aria-label="Expand Maestro MCP"
+          title="Expand Maestro MCP"
           className="grid h-7 w-7 place-items-center rounded text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-800"
         >
           <ChevronIcon direction="right" />
         </button>
+        <MaestroLogo className="h-4 w-4 text-neutral-700" />
         <span
           className="rotate-180 select-none text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-500"
           style={{ writingMode: "vertical-rl" }}
         >
-          Maestro Commands
+          Maestro MCP
         </span>
       </aside>
     );
@@ -218,7 +230,10 @@ function CommandsPanel({
   return (
     <aside className="flex h-full w-80 shrink-0 flex-col border-r border-neutral-200 bg-neutral-50">
       <header className="flex h-8 shrink-0 items-center justify-between border-b border-neutral-200 px-2">
-        <h2 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-700">Maestro Commands</h2>
+        <h2 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-neutral-700">
+          <MaestroLogo className="h-3.5 w-3.5 text-neutral-900" />
+          Maestro MCP
+        </h2>
         <div className="flex items-center gap-0.5">
           <button
             type="button"
@@ -237,8 +252,8 @@ function CommandsPanel({
           <button
             type="button"
             onClick={onToggle}
-            aria-label="Collapse Maestro Commands"
-            title="Collapse Maestro Commands"
+            aria-label="Collapse Maestro MCP"
+            title="Collapse Maestro MCP"
             className="grid h-6 w-6 place-items-center rounded text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-800"
           >
             <ChevronIcon direction="left" />
@@ -262,7 +277,7 @@ function CommandsPanel({
                     // transition-colors animates bg from sky-900 back to transparent.
                     "flex gap-2 rounded-l-xl py-0.5 pl-1.5 pr-2 leading-5 transition-colors " +
                     (running
-                      ? "bg-sky-800 text-sky-50"
+                      ? "bg-sky-100 text-sky-900"
                       : row.status === "failed"
                         ? "text-neutral-900"
                         : "")
@@ -579,7 +594,7 @@ function HardwareButton({ name, label, hideForPlatform, platform, children }: {
         sendInput({ kind: "button", action: "Down", name });
         window.setTimeout(() => sendInput({ kind: "button", action: "Up", name }), 80);
       }}
-      className="grid h-10 w-10 place-items-center rounded-md border border-neutral-200 bg-white text-neutral-700 shadow-sm transition hover:bg-neutral-50 active:bg-neutral-100"
+      className="grid h-10 w-10 place-items-center rounded-md border border-white/40 bg-white/50 text-neutral-700 shadow-sm backdrop-blur transition hover:bg-white/70 active:bg-white/90"
     >
       {children}
     </button>
@@ -589,7 +604,7 @@ function HardwareButton({ name, label, hideForPlatform, platform, children }: {
 function HardwareRail({ platform }: { platform?: string }) {
   if (platform !== "android" && platform !== "ios") return null;
   return (
-    <div className="flex shrink-0 flex-col gap-1.5 self-start rounded-lg border border-neutral-200 bg-neutral-50 p-1.5">
+    <div className="flex shrink-0 flex-col gap-1.5 self-start rounded-lg border border-white/40 bg-white/30 p-1.5 shadow-sm backdrop-blur-md">
       <HardwareButton name="power" label="Power">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
           <path d="M12 3v9" /><path d="M7 7a7 7 0 1 0 10 0" />
@@ -605,7 +620,7 @@ function HardwareRail({ platform }: { platform?: string }) {
           <path d="M5 12h14" />
         </svg>
       </HardwareButton>
-      <div className="my-1 h-px bg-neutral-200" />
+      <div className="my-1 h-px bg-white/50" />
       <HardwareButton name="back" label="Back" hideForPlatform="ios" platform={platform}>
         <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4"><path d="M15 5 L7 12 L15 19 Z" /></svg>
       </HardwareButton>
@@ -739,8 +754,8 @@ function App() {
           <>
             <div
               className={
-                "relative shrink-0 overflow-hidden rounded-[2rem] bg-neutral-900 shadow-xl shadow-neutral-300/60 transition-shadow duration-500 " +
-                (showRunning ? "ring-4 ring-sky-800" : "ring-1 ring-neutral-200")
+                "relative shrink-0 overflow-hidden rounded-[2rem] bg-neutral-900 shadow-xl shadow-neutral-300/60 ring-4 transition-shadow duration-500 " +
+                (showRunning ? "ring-sky-700" : "ring-transparent")
               }
             >
               <img className="block max-h-[calc(100vh-2rem)] w-auto" src="/api/device/stream" draggable={false} />
